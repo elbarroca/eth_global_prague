@@ -1,0 +1,18 @@
+# requirements.txt
+
+# Core testing and HTTP client
+pytest>=7.0.0
+requests>=2.25.0
+
+# For .env file support (good practice for API keys)
+python-dotenv>=0.19.0
+pandas>=2.0.0
+numpy>=1.24.0
+pydantic>=2.0.0
+
+# For logging
+logging>=0.5.0
+
+# For time-related operations
+time>=0.1.0
+
