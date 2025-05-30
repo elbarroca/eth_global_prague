@@ -2,6 +2,9 @@ import requests
 import logging
 import os
 import time
+import httpx
+import asyncio
+from typing import Optional
 
 # --- Logging Configuration ---
 logger = logging.getLogger(__name__)
@@ -91,60 +94,95 @@ GRANULARITY_MAP_PORTFOLIO_V2 = {
 
 class OneInchAPIError(Exception):
     """Custom exception for 1inch API errors."""
-    def __init__(self, message, status_code=None, response_text=None):
+    def __init__(self, message, status_code=None, response_text=None, url_requested=None):
         super().__init__(message)
         self.status_code = status_code
         self.response_text = response_text
+        self.url_requested = url_requested
 
     def __str__(self):
-        return f"{super().__str__()} (Status: {self.status_code}, Response: {self.response_text[:500] if self.response_text else 'N/A'})"
+        return f"{super().__str__()} (Status: {self.status_code}, URL: {self.url_requested}, Response: {self.response_text[:500] if self.response_text else 'N/A'})"
 
+# --- Global httpx.AsyncClient instance for connection pooling ---
+# It's better to manage the client's lifecycle, e.g., at application startup/shutdown,
+# but for this service module, we can define it here.
+# Consider passing a client instance if this service is instantiated.
+_async_http_client: Optional[httpx.AsyncClient] = None
 
-def _make_1inch_api_request(url: str, params: dict = None, api_description: str = "1inch API"):
-    logger.info(f"Attempting to fetch data from {api_description} URL: {url} with params: {params}")
+async def get_http_client() -> httpx.AsyncClient:
+    """Provides a global httpx.AsyncClient instance, creating it if necessary."""
+    global _async_http_client
+    if _async_http_client is None or _async_http_client.is_closed:
+        _async_http_client = httpx.AsyncClient(timeout=30) # Default timeout
+    return _async_http_client
+
+async def close_http_client():
+    """Closes the global httpx.AsyncClient."""
+    global _async_http_client
+    if _async_http_client and not _async_http_client.is_closed:
+        await _async_http_client.aclose()
+        _async_http_client = None
+        logger.info("Global httpx.AsyncClient closed.")
+
+async def _make_1inch_api_request(url: str, params: dict = None, api_description: str = "1inch API"):
+    logger.info(f"Attempting to fetch data async from {api_description} URL: {url} with params: {params}")
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Accept": "application/json"
     }
+    
+    client = await get_http_client()
+
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response = await client.get(url, headers=headers, params=params)
         logger.debug(f"Request URL: {response.url}")
         logger.debug(f"Request headers: {headers}")
         logger.debug(f"Response status code: {response.status_code}")
         logger.debug(f"Response raw text (first 500 chars): {response.text[:500]}")
         
-        response.raise_for_status() # Raises HTTPError for bad responses (4XX or 5XX)
+        response.raise_for_status()
         
         json_response = response.json()
-        logger.info(f"Successfully fetched data from {api_description} for URL: {url}.")
+        logger.info(f"Successfully fetched data async from {api_description} for URL: {url}.")
         return json_response
         
-    except requests.exceptions.Timeout as e:
-        logger.error(f"API request timed out for {api_description} URL: {url}")
-        raise OneInchAPIError(f"API request timed out for {api_description} URL: {url}", response_text=str(e)) from e
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP error for {api_description}: {e} - Status: {e.response.status_code} - Text: {e.response.text}")
+    except httpx.TimeoutException as e:
+        logger.error(f"API request timed out for {api_description} URL: {e.request.url}")
+        raise OneInchAPIError(
+            f"API request timed out for {api_description}", 
+            response_text=str(e),
+            url_requested=str(e.request.url)
+        ) from e
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error for {api_description}: {e} - Status: {e.response.status_code} - URL: {e.request.url} - Text: {e.response.text}")
         raise OneInchAPIError(
             f"HTTP error for {api_description}",
             status_code=e.response.status_code,
-            response_text=e.response.text
+            response_text=e.response.text,
+            url_requested=str(e.request.url)
         ) from e
-    except requests.exceptions.RequestException as e: # Catch other request-related errors (e.g., connection error)
-        logger.error(f"API request failed for {api_description}: {e}")
-        raise OneInchAPIError(f"API request failed for {api_description}", response_text=str(e)) from e
-    except ValueError as e: # JSONDecodeError inherits from ValueError
-        response_text_snippet = response.text if 'response' in locals() else 'No response object available'
-        status_code_snippet = response.status_code if 'response' in locals() else 'N/A'
-        logger.error(f"JSON decode error from {api_description}: {e}. Status: {status_code_snippet}. Text: {response_text_snippet[:500]}")
+    except httpx.RequestError as e:
+        logger.error(f"API request failed for {api_description} URL: {e.request.url}: {e}")
+        raise OneInchAPIError(
+            f"API request failed for {api_description}", 
+            response_text=str(e),
+            url_requested=str(e.request.url)
+        ) from e
+    except ValueError as e:
+        response_text_snippet = response.text if 'response' in locals() and hasattr(response, 'text') else 'No response text available'
+        status_code_snippet = response.status_code if 'response' in locals() and hasattr(response, 'status_code') else 'N/A'
+        url_snippet = str(response.url) if 'response' in locals() and hasattr(response, 'url') else url
+        logger.error(f"JSON decode error from {api_description}: {e}. Status: {status_code_snippet}. URL: {url_snippet}. Text: {response_text_snippet[:500]}")
         raise OneInchAPIError(
             f"JSON decode error from {api_description}",
             status_code=status_code_snippet,
-            response_text=response_text_snippet
+            response_text=response_text_snippet,
+            url_requested=url_snippet
         ) from e
 
-def get_ohlcv_data(token0_address: str, token1_address: str, interval_seconds: int, chain_id: int):
+async def get_ohlcv_data(token0_address: str, token1_address: str, interval_seconds: int, chain_id: int):
     """
-    Fetches OHLCV (candlestick) data from the 1inch Charts API.
+    Fetches OHLCV (candlestick) data from the 1inch Charts API asynchronously.
 
     Args:
         token0_address: The address of the first token in the pair.
@@ -160,11 +198,11 @@ def get_ohlcv_data(token0_address: str, token1_address: str, interval_seconds: i
         OneInchAPIError: If the API request fails or returns an error.
     """
     url = f"{CHARTS_API_BASE_URL}/{token0_address}/{token1_address}/{interval_seconds}/{chain_id}"
-    return _make_1inch_api_request(url, api_description=f"1inch Charts API (OHLCV {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
+    return await _make_1inch_api_request(url, api_description=f"1inch Charts API (OHLCV {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
 
-def get_cross_prices_data(chain_id: int, token0_address: str, token1_address: str, from_timestamp: int, to_timestamp: int, granularity_key: str):
+async def get_cross_prices_data(chain_id: int, token0_address: str, token1_address: str, from_timestamp: int, to_timestamp: int, granularity_key: str):
     """
-    Fetches historical cross-price data from the 1inch Portfolio API v2.
+    Fetches historical cross-price data from the 1inch Portfolio API v2 asynchronously.
 
     Args:
         chain_id: The chain ID.
@@ -195,12 +233,12 @@ def get_cross_prices_data(chain_id: int, token0_address: str, token1_address: st
         "to_timestamp": to_timestamp,
         "granularity": granularity_api_value
     }
-    logger.info(f"Requesting Portfolio API v2 with params: {params}")
-    return _make_1inch_api_request(PORTFOLIO_CROSS_PRICES_API_URL, params=params, api_description=f"1inch Portfolio API v2 (Cross Prices {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
+    logger.info(f"Requesting Portfolio API v2 async with params: {params}")
+    return await _make_1inch_api_request(PORTFOLIO_CROSS_PRICES_API_URL, params=params, api_description=f"1inch Portfolio API v2 (Cross Prices {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
 
-def fetch_1inch_whitelisted_tokens(chain_id_filter: int = None) -> list[dict]:
+async def fetch_1inch_whitelisted_tokens(chain_id_filter: int = None) -> list[dict]:
     """
-    Fetches 1inch whitelisted multi-chain tokens, optionally filtering by a specific chainId.
+    Fetches 1inch whitelisted multi-chain tokens asynchronously, optionally filtering by a specific chainId.
     The endpoint returns data for all chains it supports; filtering is done client-side.
 
     Args:
@@ -214,19 +252,19 @@ def fetch_1inch_whitelisted_tokens(chain_id_filter: int = None) -> list[dict]:
         OneInchAPIError: If the API request fails.
     """
     url = f"{TOKEN_API_DOMAIN}{MULTI_CHAIN_TOKENS_ENDPOINT_V1_3}"
-    params = {"provider": "1inch"}  # As suggested by 1inch documentation
+    params = {"provider": "1inch"}
 
-    logger.info(f"Fetching 1inch whitelisted multi-chain tokens. Filter for chain ID: {chain_id_filter if chain_id_filter else 'None'}")
+    logger.info(f"Fetching 1inch whitelisted multi-chain tokens async. Filter for chain ID: {chain_id_filter if chain_id_filter else 'None'}")
 
     try:
-        all_chains_tokens_data = _make_1inch_api_request(
+        all_chains_tokens_data = await _make_1inch_api_request(
             url,
             params=params,
             api_description="1inch Token API (Multi-chain Whitelist v1.3)"
         )
     except OneInchAPIError as e:
-        logger.error(f"Failed to fetch whitelisted tokens: {e}")
-        raise # Re-raise the error to be handled by the caller
+        logger.error(f"Failed to fetch whitelisted tokens async: {e}")
+        raise
 
     if not all_chains_tokens_data:
         logger.warning("Received no data from multi-chain token endpoint.")

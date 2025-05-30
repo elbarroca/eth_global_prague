@@ -8,6 +8,10 @@ ONE_INCH_API_KEY = os.environ.get("ONE_INCH_API_KEY")
 
 NATIVE_ASSET_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
+COMMON_STABLECOIN_SYMBOLS = {
+    "USDT", "USDC", "USDS", "USDE", "DAI", "SUSD", "USD1", "FDUSD", "PYUSD", "USDX",
+    "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "PAX",
+}
 # Chain IDs (can be expanded)
 ETHEREUM_CHAIN_ID = 1
 BASE_CHAIN_ID = 8453
