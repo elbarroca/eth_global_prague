@@ -5,18 +5,6 @@ import os
 from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 
-<<<<<<< HEAD
-# Import settings/configs
-try:
-    from ..configs import *
-except ImportError:
-    # Fallback for absolute import
-    from configs import *
-
-# Configuration constants (these should be defined in configs.py or environment)
-FUSION_PLUS_API_BASE_URL = "https://api.1inch.dev/fusion-plus"  # As per cross-chain-sdk
-DEFAULT_SOURCE_APP_NAME = "AOSE_DApp"
-=======
 # Load environment variables
 load_dotenv()
 
@@ -24,7 +12,6 @@ load_dotenv()
 ONE_INCH_API_KEY = os.getenv("ONE_INCH_API_KEY", "")
 FUSION_PLUS_BASE_URL = "https://api.1inch.dev/fusion-plus"
 DEFAULT_SOURCE_APP_NAME = "ETHGlobalPrague"  # Default source app name for your application
->>>>>>> 264be62 (smol fix)
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +19,8 @@ logger = logging.getLogger(__name__)
 SESSION = requests.Session()
 if ONE_INCH_API_KEY:
     SESSION.headers.update({"Authorization": f"Bearer {ONE_INCH_API_KEY}"})
-<<<<<<< HEAD
-=======
 else:
     logger.warning("ONE_INCH_API_KEY not found in environment variables. API calls will likely fail.")
->>>>>>> 264be62 (smol fix)
 SESSION.headers.update({"Accept": "application/json"})
 SESSION.headers.update({"Content-Type": "application/json"})
 
@@ -54,11 +38,7 @@ def _make_one_inch_request(
     endpoint: str,  # e.g., "/v1.0/quote/receive" or "/orders/v1.0/order/ready-to-accept-secret-fills/{orderHash}"
     params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None,
-<<<<<<< HEAD
-    base_url: str = FUSION_PLUS_API_BASE_URL # Default to Fusion+
-=======
     service_type: str = None  # Can be "quoter", "orders", or None (default)
->>>>>>> 264be62 (smol fix)
 ) -> Any:
     """
     Make a request to the 1inch Fusion+ API.
@@ -131,11 +111,7 @@ def get_fusion_plus_quote_backend(
     }
     logger.info(f"Requesting Fusion+ quote with payload: {payload}")
     try:
-<<<<<<< HEAD
-        quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, base_url=FUSION_PLUS_API_BASE_URL)
-=======
         quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, service_type="quoter")
->>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ quote: {quote_response}")
         return quote_response
     except OneInchAPIError as e:
@@ -143,34 +119,6 @@ def get_fusion_plus_quote_backend(
         raise
 
 def prepare_fusion_plus_order_for_signing_backend(
-<<<<<<< HEAD
-    quote: Dict[str, Any], # The full quote object from get_fusion_plus_quote_backend
-    wallet_address: str, # User's EVM wallet address (maker) on source chain
-    receiver_address: Optional[str] = None, # User's destination address (e.g., Solana if different, or EVM on dest chain)
-    # Preset and secrets are crucial for Fusion+ and come from the quote or are generated.
-    # The cross-chain SDK example: sdk.createOrder(quote, { walletAddress, hashLock, preset, source, secretHashes })
-    # `hashLock` and `secretHashes` are derived from `secrets`.
-    # The backend *could* generate secrets if it's also going to manage their submission later,
-    # but this is complex. Typically, the frontend SDK might handle secret generation.
-    # For this function, we assume the necessary parts of the quote (like presets) guide this.
-    # The `POST /v1.0/order/build` endpoint is likely what the SDK calls.
-    source_app_name: str = DEFAULT_SOURCE_APP_NAME,
-    # We need to choose a preset from the quote.
-    # And then potentially prepare for secrets if the backend is involved in that part.
-    # For now, this function will focus on parameters for the equivalent of `sdk.createOrder`
-    # which means we might be calling the `/order/build` endpoint.
-    preset_name: str = "fast", # User should select or default to a preset from the quote
-    # If secrets are managed by frontend, it will handle hashLock and secretHashes.
-    # If backend were to prepare for `build` API call, it might need these.
-    # For now, let's assume this function prepares params for frontend SDK's createOrder,
-    # or if calling /order/build, it would need more inputs like generated secrets/hashlock.
-    # Let's align with the `/v1.0/order/build` swagger.
-    # This endpoint helps construct the order data that needs to be signed.
-    custom_preset: Optional[Dict[str, Any]] = None, # If not using a named preset from quote
-    permit: Optional[str] = None, # EIP-2612 permit for fromToken
-    deadline_shift_sec: Optional[int] = None # If you want to adjust auction deadline
-
-=======
     quote: Dict[str, Any],
     wallet_address: str,
     receiver_address: Optional[str] = None,
@@ -179,7 +127,6 @@ def prepare_fusion_plus_order_for_signing_backend(
     custom_preset: Optional[Dict[str, Any]] = None,
     permit: Optional[str] = None,
     deadline_shift_sec: Optional[int] = None
->>>>>>> 264be62 (smol fix)
 ) -> Dict[str, Any]:
     """
     Calls the 1inch Fusion+ API to build the order structure that needs to be signed by the user.
@@ -206,14 +153,7 @@ def prepare_fusion_plus_order_for_signing_backend(
 
     logger.info(f"Requesting Fusion+ order build with payload: {build_payload}")
     try:
-<<<<<<< HEAD
-        # The build endpoint is under /quoter/{chainId}/order/build in some contexts.
-        # However, your swagger link is /v1.0/quote/build. Let's use that.
-        # Chain context for build might be implicit from quoteId.
-        built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, base_url=FUSION_PLUS_API_BASE_URL)
-=======
         built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, service_type="quoter")
->>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ built order data for signing: {built_order_data}")
         return built_order_data
     except OneInchAPIError as e:
@@ -237,11 +177,7 @@ def submit_signed_fusion_plus_order_backend(
 
     logger.info(f"Submitting signed Fusion+ order with payload: {signed_order_payload}")
     try:
-<<<<<<< HEAD
-        submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload, base_url=FUSION_PLUS_API_BASE_URL)
-=======
         submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload)
->>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ order submission response: {submission_response}")
         return submission_response
     except OneInchAPIError as e:
