@@ -1,10 +1,12 @@
 # app/main.py
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from typing import List, Optional, Dict, Any
 import logging
 import time
+from pydantic import BaseModel, Field
 
 from services import one_inch_service # Changed from relative to absolute import
+from services import one_inch_fusion_service # Import the fusion service
 from configs import * # Changed from relative to absolute import
 
 # Configure logging for the main application
@@ -27,6 +29,30 @@ app = FastAPI(
 DEFAULT_MAX_TOKENS_TO_SCREEN = 5
 DEFAULT_PERIOD_SECONDS = PERIOD_DAILY_SECONDS # Daily
 API_CALL_DELAY_SECONDS = 0.75 # Be respectful
+
+# Define Pydantic models for Fusion+ API requests
+class FusionQuoteRequest(BaseModel):
+    src_chain_id: int = Field(..., description="Source chain ID")
+    dst_chain_id: int = Field(..., description="Destination chain ID")
+    src_token_address: str = Field(..., description="Source token address")
+    dst_token_address: str = Field(..., description="Destination token address")
+    amount_wei: str = Field(..., description="Amount in wei")
+    wallet_address: str = Field(..., description="User's wallet address")
+    enable_estimate: bool = Field(True, description="Enable estimation")
+
+class FusionOrderBuildRequest(BaseModel):
+    quote: Dict[str, Any] = Field(..., description="Quote object from get_fusion_plus_quote")
+    wallet_address: str = Field(..., description="User's wallet address")
+    receiver_address: Optional[str] = Field(None, description="Receiver address (if different from wallet)")
+    source_app_name: Optional[str] = Field(None, description="Source app name")
+    preset_name: str = Field("fast", description="Preset name (fast, normal, etc.)")
+    custom_preset: Optional[Dict[str, Any]] = Field(None, description="Custom preset configuration")
+    permit: Optional[str] = Field(None, description="EIP-2612 permit")
+    deadline_shift_sec: Optional[int] = Field(None, description="Deadline shift in seconds")
+
+class FusionOrderSubmitRequest(BaseModel):
+    src_chain_id: int = Field(..., description="Source chain ID")
+    signed_order_payload: Dict[str, Any] = Field(..., description="Signed order payload")
 
 @app.get("/screen_tokens/{chain_id}", response_model=List[Dict[str, Any]])
 async def screen_tokens_on_chain(
@@ -172,6 +198,78 @@ async def screen_tokens_on_chain(
 
     logger.info(f"Screening completed for chain: {chain_name}. Returning {len(screener_results)} results.")
     return screener_results
+
+# Fusion+ API endpoints
+@app.post("/fusion/quote", response_model=Dict[str, Any])
+async def get_fusion_quote(request: FusionQuoteRequest):
+    """
+    Get a cross-chain swap quote using 1inch Fusion+
+    """
+    logger.info(f"Getting Fusion+ quote for {request.src_token_address} on chain {request.src_chain_id} to {request.dst_token_address} on chain {request.dst_chain_id}")
+    
+    try:
+        quote = one_inch_fusion_service.get_fusion_plus_quote_backend(
+            src_chain_id=request.src_chain_id,
+            dst_chain_id=request.dst_chain_id,
+            src_token_address=request.src_token_address,
+            dst_token_address=request.dst_token_address,
+            amount_wei=request.amount_wei,
+            wallet_address=request.wallet_address,
+            enable_estimate=request.enable_estimate
+        )
+        return quote
+    except one_inch_fusion_service.OneInchAPIError as e:
+        logger.error(f"API Error getting Fusion+ quote: {e}")
+        raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to get Fusion+ quote: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error getting Fusion+ quote: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.post("/fusion/build_order", response_model=Dict[str, Any])
+async def build_fusion_order(request: FusionOrderBuildRequest):
+    """
+    Build a Fusion+ order structure for signing
+    """
+    logger.info(f"Building Fusion+ order for wallet {request.wallet_address}")
+    
+    try:
+        order_data = one_inch_fusion_service.prepare_fusion_plus_order_for_signing_backend(
+            quote=request.quote,
+            wallet_address=request.wallet_address,
+            receiver_address=request.receiver_address,
+            source_app_name=request.source_app_name,
+            preset_name=request.preset_name,
+            custom_preset=request.custom_preset,
+            permit=request.permit,
+            deadline_shift_sec=request.deadline_shift_sec
+        )
+        return order_data
+    except one_inch_fusion_service.OneInchAPIError as e:
+        logger.error(f"API Error building Fusion+ order: {e}")
+        raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to build Fusion+ order: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error building Fusion+ order: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.post("/fusion/submit_order", response_model=Dict[str, Any])
+async def submit_fusion_order(request: FusionOrderSubmitRequest):
+    """
+    Submit a signed Fusion+ order to the 1inch relayer
+    """
+    logger.info(f"Submitting signed Fusion+ order on chain {request.src_chain_id}")
+    
+    try:
+        submission_result = one_inch_fusion_service.submit_signed_fusion_plus_order_backend(
+            src_chain_id=request.src_chain_id,
+            signed_order_payload=request.signed_order_payload
+        )
+        return submission_result
+    except one_inch_fusion_service.OneInchAPIError as e:
+        logger.error(f"API Error submitting Fusion+ order: {e}")
+        raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to submit Fusion+ order: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error submitting Fusion+ order: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @app.get("/")
 async def root():
