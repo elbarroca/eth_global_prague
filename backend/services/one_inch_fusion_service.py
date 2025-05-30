@@ -3,17 +3,23 @@ import logging
 import time # For potential delays or timeouts
 from typing import Optional, List, Dict, Any, Union # Added Union
 
-# Assuming settings contains:
-# settings.ONE_INCH_API_KEY (your DEV_PORTAL_API_TOKEN)
-# settings.FUSION_PLUS_API_BASE_URL = "https://api.1inch.dev/fusion-plus" # As per cross-chain-sdk
-# settings.DEFAULT_SOURCE_APP_NAME = "AOSE_DApp"
+# Import settings/configs
+try:
+    from ..configs import *
+except ImportError:
+    # Fallback for absolute import
+    from configs import *
+
+# Configuration constants (these should be defined in configs.py or environment)
+FUSION_PLUS_API_BASE_URL = "https://api.1inch.dev/fusion-plus"  # As per cross-chain-sdk
+DEFAULT_SOURCE_APP_NAME = "AOSE_DApp"
 
 logger = logging.getLogger(__name__)
 
 # --- HTTP Session for 1inch Dev Portal & Fusion API ---
 SESSION = requests.Session()
-if hasattr(settings, 'ONE_INCH_API_KEY') and settings.ONE_INCH_API_KEY:
-    SESSION.headers.update({"Authorization": f"Bearer {settings.ONE_INCH_API_KEY}"})
+if ONE_INCH_API_KEY:
+    SESSION.headers.update({"Authorization": f"Bearer {ONE_INCH_API_KEY}"})
 SESSION.headers.update({"Accept": "application/json"})
 SESSION.headers.update({"Content-Type": "application/json"}) # Good practice for POST
 
@@ -31,7 +37,7 @@ def _make_one_inch_request(
     endpoint: str, # e.g., "/v1.0/quote/receive"
     params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None,
-    base_url: str = settings.FUSION_PLUS_API_BASE_URL # Default to Fusion+
+    base_url: str = FUSION_PLUS_API_BASE_URL # Default to Fusion+
 ) -> Any:
     url = f"{base_url}{endpoint}"
     try:
@@ -91,7 +97,7 @@ def get_fusion_plus_quote_backend(
     }
     logger.info(f"Requesting Fusion+ quote with payload: {payload}")
     try:
-        quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, base_url=settings.FUSION_PLUS_API_BASE_URL)
+        quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, base_url=FUSION_PLUS_API_BASE_URL)
         logger.info(f"Received Fusion+ quote: {quote_response}")
         return quote_response # This will be the full quote object from the API
     except OneInchAPIError as e:
@@ -109,7 +115,7 @@ def prepare_fusion_plus_order_for_signing_backend(
     # but this is complex. Typically, the frontend SDK might handle secret generation.
     # For this function, we assume the necessary parts of the quote (like presets) guide this.
     # The `POST /v1.0/order/build` endpoint is likely what the SDK calls.
-    source_app_name: str = settings.DEFAULT_SOURCE_APP_NAME,
+    source_app_name: str = DEFAULT_SOURCE_APP_NAME,
     # We need to choose a preset from the quote.
     # And then potentially prepare for secrets if the backend is involved in that part.
     # For now, this function will focus on parameters for the equivalent of `sdk.createOrder`
@@ -186,7 +192,7 @@ def prepare_fusion_plus_order_for_signing_backend(
         # The build endpoint is under /quoter/{chainId}/order/build in some contexts.
         # However, your swagger link is /v1.0/quote/build. Let's use that.
         # Chain context for build might be implicit from quoteId.
-        built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, base_url=settings.FUSION_PLUS_API_BASE_URL)
+        built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, base_url=FUSION_PLUS_API_BASE_URL)
         logger.info(f"Received Fusion+ built order data for signing: {built_order_data}")
         # This response should contain the `order` structure (EIP-712 domain, types, message)
         # and potentially other details needed for signing.
@@ -226,7 +232,7 @@ def submit_signed_fusion_plus_order_backend(
 
     logger.info(f"Submitting signed Fusion+ order with payload: {signed_order_payload}")
     try:
-        submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload, base_url=settings.FUSION_PLUS_API_BASE_URL)
+        submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload, base_url=FUSION_PLUS_API_BASE_URL)
         logger.info(f"Received Fusion+ order submission response: {submission_response}")
         # Expected response: { orderHash: string, txHash?: string (if executed immediately), status: string }
         return submission_response

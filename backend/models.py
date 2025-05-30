@@ -1,3 +1,6 @@
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional
+
 # Define Pydantic models for Fusion+ API requests
 class FusionQuoteRequest(BaseModel):
     src_chain_id: int = Field(..., description="Source chain ID")
