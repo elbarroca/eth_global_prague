@@ -13,8 +13,15 @@ from services.mongo_service import (
 )
 
 from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest
+<<<<<<< HEAD
 from services import one_inch_data_service # Fixed: changed from one_inch_service to one_inch_data_service
 from services import one_inch_fusion_service # Import the fusion service
+=======
+# Fix import error by importing directly from service files
+from services.one_inch_fusion_service import get_fusion_plus_quote_backend, prepare_fusion_plus_order_for_signing_backend, submit_signed_fusion_plus_order_backend, check_order_status, OneInchAPIError
+# If you have a one_inch_service.py file, import directly from it too
+# from services.one_inch_service import fetch_1inch_whitelisted_tokens, get_ohlcv_data
+>>>>>>> 264be62 (smol fix)
 from configs import * # Changed from relative to absolute import
 
 # Configure logging for the main application
@@ -77,6 +84,7 @@ async def screen_tokens_on_chain( # Made async
     
     The process is limited to 30 tokens and has a 1-minute timeout for efficiency.
     """
+<<<<<<< HEAD
     try:
         # Wrap the entire screening process with a timeout
         return await asyncio.wait_for(
@@ -308,6 +316,11 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
     logger.info(f"Token screening completed in {total_time:.2f} seconds (limit: {SCREENING_TIMEOUT_SECONDS}s)")
     
     return screener_results
+=======
+    # Note: This endpoint may need to be updated if you don't have one_inch_service
+    # For now keeping it as a placeholder
+    return []
+>>>>>>> 264be62 (smol fix)
 
 # Fusion+ API endpoints
 @app.post("/fusion/quote", response_model=Dict[str, Any])
@@ -318,7 +331,7 @@ async def get_fusion_quote(request: FusionQuoteRequest):
     logger.info(f"Getting Fusion+ quote for {request.src_token_address} on chain {request.src_chain_id} to {request.dst_token_address} on chain {request.dst_chain_id}")
     
     try:
-        quote = one_inch_fusion_service.get_fusion_plus_quote_backend(
+        quote = get_fusion_plus_quote_backend(
             src_chain_id=request.src_chain_id,
             dst_chain_id=request.dst_chain_id,
             src_token_address=request.src_token_address,
@@ -328,7 +341,7 @@ async def get_fusion_quote(request: FusionQuoteRequest):
             enable_estimate=request.enable_estimate
         )
         return quote
-    except one_inch_fusion_service.OneInchAPIError as e:
+    except OneInchAPIError as e:
         logger.error(f"API Error getting Fusion+ quote: {e}")
         raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to get Fusion+ quote: {str(e)}")
     except Exception as e:
@@ -343,7 +356,7 @@ async def build_fusion_order(request: FusionOrderBuildRequest):
     logger.info(f"Building Fusion+ order for wallet {request.wallet_address}")
     
     try:
-        order_data = one_inch_fusion_service.prepare_fusion_plus_order_for_signing_backend(
+        order_data = prepare_fusion_plus_order_for_signing_backend(
             quote=request.quote,
             wallet_address=request.wallet_address,
             receiver_address=request.receiver_address,
@@ -354,7 +367,7 @@ async def build_fusion_order(request: FusionOrderBuildRequest):
             deadline_shift_sec=request.deadline_shift_sec
         )
         return order_data
-    except one_inch_fusion_service.OneInchAPIError as e:
+    except OneInchAPIError as e:
         logger.error(f"API Error building Fusion+ order: {e}")
         raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to build Fusion+ order: {str(e)}")
     except Exception as e:
@@ -369,18 +382,35 @@ async def submit_fusion_order(request: FusionOrderSubmitRequest):
     logger.info(f"Submitting signed Fusion+ order on chain {request.src_chain_id}")
     
     try:
-        submission_result = one_inch_fusion_service.submit_signed_fusion_plus_order_backend(
+        submission_result = submit_signed_fusion_plus_order_backend(
             src_chain_id=request.src_chain_id,
             signed_order_payload=request.signed_order_payload
         )
         return submission_result
-    except one_inch_fusion_service.OneInchAPIError as e:
+    except OneInchAPIError as e:
         logger.error(f"API Error submitting Fusion+ order: {e}")
         raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to submit Fusion+ order: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error submitting Fusion+ order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+@app.get("/fusion/order_status/{order_hash}", response_model=Dict[str, Any])
+async def get_order_status(order_hash: str):
+    """
+    Check the status of a Fusion+ order
+    """
+    logger.info(f"Checking status for order: {order_hash}")
+    
+    try:
+        status = check_order_status(order_hash)
+        return status
+    except OneInchAPIError as e:
+        logger.error(f"API Error checking order status: {e}")
+        raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to check order status: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error checking order status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the 1inch Token Screener API. Use /docs for API documentation."}
+    return {"message": "Welcome to the 1inch Fusion+ API. Use /docs for API documentation."}

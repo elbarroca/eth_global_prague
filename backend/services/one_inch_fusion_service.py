@@ -1,8 +1,11 @@
 import requests
 import logging
-import time # For potential delays or timeouts
-from typing import Optional, List, Dict, Any, Union # Added Union
+import time
+import os
+from typing import Optional, List, Dict, Any, Union
+from dotenv import load_dotenv
 
+<<<<<<< HEAD
 # Import settings/configs
 try:
     from ..configs import *
@@ -13,6 +16,15 @@ except ImportError:
 # Configuration constants (these should be defined in configs.py or environment)
 FUSION_PLUS_API_BASE_URL = "https://api.1inch.dev/fusion-plus"  # As per cross-chain-sdk
 DEFAULT_SOURCE_APP_NAME = "AOSE_DApp"
+=======
+# Load environment variables
+load_dotenv()
+
+# Constants
+ONE_INCH_API_KEY = os.getenv("ONE_INCH_API_KEY", "")
+FUSION_PLUS_BASE_URL = "https://api.1inch.dev/fusion-plus"
+DEFAULT_SOURCE_APP_NAME = "ETHGlobalPrague"  # Default source app name for your application
+>>>>>>> 264be62 (smol fix)
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +32,13 @@ logger = logging.getLogger(__name__)
 SESSION = requests.Session()
 if ONE_INCH_API_KEY:
     SESSION.headers.update({"Authorization": f"Bearer {ONE_INCH_API_KEY}"})
+<<<<<<< HEAD
+=======
+else:
+    logger.warning("ONE_INCH_API_KEY not found in environment variables. API calls will likely fail.")
+>>>>>>> 264be62 (smol fix)
 SESSION.headers.update({"Accept": "application/json"})
-SESSION.headers.update({"Content-Type": "application/json"}) # Good practice for POST
+SESSION.headers.update({"Content-Type": "application/json"})
 
 # --- Custom Exception ---
 class OneInchAPIError(RuntimeError):
@@ -31,17 +48,45 @@ class OneInchAPIError(RuntimeError):
         self.response_text = response_text
         self.url = url
 
-# --- Helper for Making Requests (Assuming you have this defined elsewhere) ---
+# --- Helper for Making Requests ---
 def _make_one_inch_request(
     method: str,
-    endpoint: str, # e.g., "/v1.0/quote/receive"
+    endpoint: str,  # e.g., "/v1.0/quote/receive" or "/orders/v1.0/order/ready-to-accept-secret-fills/{orderHash}"
     params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None,
+<<<<<<< HEAD
     base_url: str = FUSION_PLUS_API_BASE_URL # Default to Fusion+
+=======
+    service_type: str = None  # Can be "quoter", "orders", or None (default)
+>>>>>>> 264be62 (smol fix)
 ) -> Any:
+    """
+    Make a request to the 1inch Fusion+ API.
+    
+    Args:
+        method: HTTP method (GET, POST, etc.)
+        endpoint: API endpoint path (starting with /)
+        params: Query parameters
+        json_data: JSON body data
+        service_type: Specific service type (quoter, orders, etc.)
+    
+    Returns:
+        JSON response from the API
+    """
+    # Construct the base URL based on service_type
+    if service_type:
+        base_url = f"{FUSION_PLUS_BASE_URL}/{service_type}"
+    else:
+        base_url = FUSION_PLUS_BASE_URL
+    
+    # If endpoint already includes the service type, use the base URL directly
+    if endpoint.startswith("/quoter/") or endpoint.startswith("/orders/"):
+        base_url = FUSION_PLUS_BASE_URL
+    
     url = f"{base_url}{endpoint}"
+    
     try:
-        response = SESSION.request(method, url, params=params, json=json_data, timeout=30) # Added timeout
+        response = SESSION.request(method, url, params=params, json=json_data, timeout=30)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.HTTPError as http_err:
@@ -55,12 +100,12 @@ def _make_one_inch_request(
     except requests.exceptions.RequestException as req_err:
         logger.error(f"Request exception occurred: {req_err}")
         raise OneInchAPIError(f"Request failed: {str(req_err)}", url=url) from req_err
-    except ValueError as json_err: # Catch JSON decoding errors
+    except ValueError as json_err:
         logger.error(f"JSON decoding error: {json_err} - Response text: {response.text}")
         raise OneInchAPIError(f"JSON decoding error: {str(json_err)}", response_text=response.text, url=url) from json_err
 
 
-# --- NEW: Functions related to Fusion+ ---
+# --- Functions related to Fusion+ ---
 
 def get_fusion_plus_quote_backend(
     src_chain_id: int,
@@ -68,43 +113,37 @@ def get_fusion_plus_quote_backend(
     src_token_address: str,
     dst_token_address: str,
     amount_wei: str,
-    wallet_address: str, # Required by the cross-chain SDK's getQuote
-    enable_estimate: bool = True # As seen in cross-chain SDK
-    # permit_data: Optional[str] = None # Permit is usually part of order creation if needed
+    wallet_address: str,
+    enable_estimate: bool = True
 ) -> Dict[str, Any]:
     """
     Calls the 1inch Fusion+ API to get a cross-chain quote.
-    Corresponds to `POST /v1.0/quoter/{srcChainId}/quote/receive` (based on typical 1inch API structure,
-    but cross-chain SDK uses a unified endpoint, so we'll use that for direct call).
-    The cross-chain SDK example points to a general quote endpoint for fusion-plus.
-    The swagger for /v1.0/quote/receive seems more generic. Let's assume a POST to a path that includes chain info or is handled by the body.
-    The cross-chain SDK example uses: `sdk.getQuote({ amount, srcChainId, dstChainId, srcTokenAddress, dstTokenAddress, walletAddress, enableEstimate })`
-    The API endpoint for this is likely `POST /v1.0/quote/receive` on the `fusion-plus` base URL.
     """
-    # The `POST /v1.0/quote/receive` endpoint in the Swagger link you provided seems to be for this.
-    # It expects a body.
-    endpoint = "/v1.0/quote/receive" # From your provided Swagger link
+    endpoint = "/v1.0/quote/receive"
     payload = {
         "srcChainId": src_chain_id,
         "dstChainId": dst_chain_id,
-        "fromTokenAddress": src_token_address, # API uses fromTokenAddress/toTokenAddress
+        "fromTokenAddress": src_token_address,
         "toTokenAddress": dst_token_address,
         "amount": amount_wei,
         "walletAddress": wallet_address,
         "enableEstimate": enable_estimate,
-        # "permit": permit_data, # Permit is usually for the order itself, not the quote.
-        # "takingFeeBps": 0 # Optional: if you have specific fee requirements
     }
     logger.info(f"Requesting Fusion+ quote with payload: {payload}")
     try:
+<<<<<<< HEAD
         quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, base_url=FUSION_PLUS_API_BASE_URL)
+=======
+        quote_response = _make_one_inch_request("POST", endpoint, json_data=payload, service_type="quoter")
+>>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ quote: {quote_response}")
-        return quote_response # This will be the full quote object from the API
+        return quote_response
     except OneInchAPIError as e:
         logger.error(f"Error getting Fusion+ quote: {e}")
-        raise # Re-raise the error for the caller to handle
+        raise
 
 def prepare_fusion_plus_order_for_signing_backend(
+<<<<<<< HEAD
     quote: Dict[str, Any], # The full quote object from get_fusion_plus_quote_backend
     wallet_address: str, # User's EVM wallet address (maker) on source chain
     receiver_address: Optional[str] = None, # User's destination address (e.g., Solana if different, or EVM on dest chain)
@@ -131,16 +170,22 @@ def prepare_fusion_plus_order_for_signing_backend(
     permit: Optional[str] = None, # EIP-2612 permit for fromToken
     deadline_shift_sec: Optional[int] = None # If you want to adjust auction deadline
 
+=======
+    quote: Dict[str, Any],
+    wallet_address: str,
+    receiver_address: Optional[str] = None,
+    source_app_name: str = DEFAULT_SOURCE_APP_NAME,
+    preset_name: str = "fast",
+    custom_preset: Optional[Dict[str, Any]] = None,
+    permit: Optional[str] = None,
+    deadline_shift_sec: Optional[int] = None
+>>>>>>> 264be62 (smol fix)
 ) -> Dict[str, Any]:
     """
     Calls the 1inch Fusion+ API to build the order structure that needs to be signed by the user.
-    Corresponds to `POST /v1.0/quoter/{srcChainId}/order/build` (adjusting for actual Fusion+ structure).
-    The swagger link provided is `POST /v1.0/quote/build` - this seems to be the one.
     """
-    endpoint = "/v1.0/quote/build" # From your provided Swagger link for "build"
+    endpoint = "/v1.0/quote/build"
     
-    # Extract necessary info from the quote for the build payload
-    # The build payload requires `quoteId` and parameters to customize the order.
     if not quote.get("quoteId"):
         raise ValueError("quoteId is missing from the quote object.")
 
@@ -149,54 +194,27 @@ def prepare_fusion_plus_order_for_signing_backend(
         "walletAddress": wallet_address,
         "receiver": receiver_address if receiver_address else wallet_address,
         "source": source_app_name,
-        # Preset handling: The API might expect either a preset name (if it can resolve it from quoteId)
-        # or the actual preset values. The cross-chain SDK uses a preset from the quote.
-        # `quote.presets[chosen_preset_name]` would contain `auctionDuration`, `initialRate`, etc.
-        # The /v1.0/quote/build swagger shows it takes `customPreset` or relies on quote's default.
     }
 
-    if custom_preset: # If providing a full custom preset structure
+    if custom_preset:
         build_payload["customPreset"] = custom_preset
-    elif preset_name and quote.get("presets") and quote["presets"].get(preset_name):
-        # If using a named preset from the quote, the API might infer it from quoteId,
-        # or you might need to pass specific fields. The /quote/build swagger implies
-        # it might take `auctionDuration`, `minReceiveAmount`, etc. directly if not using `customPreset`.
-        # For simplicity, let's assume if not custom_preset, the API uses the quote's default or recommended.
-        # The SDK's `createOrder` takes the *chosen preset object* from the quote.
-        # The API might be similar or just needs the name/quoteId.
-        # The swagger for /quote/build doesn't explicitly list preset name as a top-level field,
-        # suggesting it either uses the quote's default or requires `customPreset`.
-        # For cross-chain, `hashLock` and `secretHashes` are also vital.
-        # The `/v1.0/quote/build` swagger *does not* show hashLock or secretHashes.
-        # This implies that `/v1.0/quote/build` might be for simpler Fusion orders, OR
-        # that these are added *after* this build step by the SDK before signing, OR
-        # there's a different build endpoint for cross-chain that includes these.
-
-        # Given the cross-chain SDK `createOrder(quote, { walletAddress, hashLock, preset, source, secretHashes })`
-        # It's likely the `order` object returned by `/v1.0/quote/build` is then augmented with hashLock/secretHashes
-        # by the SDK before constructing the EIP-712 typed data for signing.
-
-        # For now, this function will just call `/v1.0/quote/build`.
-        # The frontend SDK would then take this response, add hashLock/secretHashes (generated on frontend),
-        # and then prepare for EIP-712 signing.
-        pass # API will use default from quote or one specified if API allows name
-
+    
     if permit:
         build_payload["permit"] = permit
-    if deadline_shift_sec is not None: # API uses `deadlineShift`
+    if deadline_shift_sec is not None:
         build_payload["deadlineShift"] = deadline_shift_sec
-
 
     logger.info(f"Requesting Fusion+ order build with payload: {build_payload}")
     try:
+<<<<<<< HEAD
         # The build endpoint is under /quoter/{chainId}/order/build in some contexts.
         # However, your swagger link is /v1.0/quote/build. Let's use that.
         # Chain context for build might be implicit from quoteId.
         built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, base_url=FUSION_PLUS_API_BASE_URL)
+=======
+        built_order_data = _make_one_inch_request("POST", endpoint, json_data=build_payload, service_type="quoter")
+>>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ built order data for signing: {built_order_data}")
-        # This response should contain the `order` structure (EIP-712 domain, types, message)
-        # and potentially other details needed for signing.
-        # For cross-chain, the SDK would then add `hashLock` and `secretHashes` to the order message.
         return built_order_data
     except OneInchAPIError as e:
         logger.error(f"Error building Fusion+ order for signing: {e}")
@@ -204,38 +222,44 @@ def prepare_fusion_plus_order_for_signing_backend(
 
 
 def submit_signed_fusion_plus_order_backend(
-    src_chain_id: int, # Source chain ID, needed for the API path
-    signed_order_payload: Dict[str, Any], # This is the payload for POST /v1.0/submit
-                                          # which includes `order` (the signed EIP-712 order object),
-                                          # `quoteId`, and `secretHashes` for cross-chain.
+    src_chain_id: int,
+    signed_order_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
     Submits a signed Fusion+ order (potentially cross-chain) to the 1inch Relayer.
-    Corresponds to `POST /v1.0/relayer/{srcChainId}/order/submit` or the SDK's `sdk.submitOrder()`.
-    The swagger link provided is `POST /v1.0/submit`. This endpoint is chain-agnostic in path,
-    implying chainId might be part of the payload or inferred.
-    However, the cross-chain SDK's `submitOrder(quote.srcChainId, order, quoteId, secretHashes)`
-    suggests `srcChainId` is key. The general `/v1.0/submit` swagger takes `chainId` in the body.
     """
-    endpoint = "/v1.0/submit" # From your provided Swagger link
+    endpoint = "/v1.0/submit"
     
-    # The payload for `/v1.0/submit` according to its swagger:
-    # { chainId: number, order: FusionOrder, quoteId: string, secretHashes?: string[] }
-    # `signed_order_payload` should already be structured like this by the caller.
-    # Ensure chainId is present.
     if "chainId" not in signed_order_payload:
         signed_order_payload["chainId"] = src_chain_id
     elif signed_order_payload["chainId"] != src_chain_id:
-        # Or handle as an error, depending on desired strictness
         logger.warning(f"src_chain_id ({src_chain_id}) differs from chainId in payload ({signed_order_payload['chainId']}). Using payload's.")
-
 
     logger.info(f"Submitting signed Fusion+ order with payload: {signed_order_payload}")
     try:
+<<<<<<< HEAD
         submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload, base_url=FUSION_PLUS_API_BASE_URL)
+=======
+        submission_response = _make_one_inch_request("POST", endpoint, json_data=signed_order_payload)
+>>>>>>> 264be62 (smol fix)
         logger.info(f"Received Fusion+ order submission response: {submission_response}")
-        # Expected response: { orderHash: string, txHash?: string (if executed immediately), status: string }
         return submission_response
     except OneInchAPIError as e:
         logger.error(f"Error submitting signed Fusion+ order: {e}")
+        raise
+
+
+# Additional helper for checking order status (useful for cross-chain orders)
+def check_order_status(order_hash: str) -> Dict[str, Any]:
+    """
+    Check the status of an order by its hash.
+    """
+    endpoint = f"/v1.0/order/ready-to-accept-secret-fills/{order_hash}"
+    logger.info(f"Checking status for order: {order_hash}")
+    try:
+        status_response = _make_one_inch_request("GET", endpoint, service_type="orders")
+        logger.info(f"Received order status: {status_response}")
+        return status_response
+    except OneInchAPIError as e:
+        logger.error(f"Error checking order status: {e}")
         raise
