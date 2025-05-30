@@ -19,6 +19,7 @@ from backend.services.one_inch_service import (
     USDC_ADDRESSES,
     NATIVE_ASSET_ADDRESS,
     WETH_ETHEREUM_ADDRESS,  # Import WETH address
+    USDT_ADDRESSES, # Import USDT addresses
     ETHEREUM_CHAIN_ID,      # Import Ethereum chain ID
     BASE_CHAIN_ID,          # Assuming BASE_CHAIN_ID is imported from backend.inch_service
     ARBITRUM_CHAIN_ID       # Assuming ARBITRUM_CHAIN_ID is imported from backend.inch_service
@@ -124,30 +125,21 @@ def test_fetch_ohlcv_for_top_tokens_per_chain_simple():
         
         tokens_to_screen = all_tokens_on_chain[:MAX_TOKENS_TO_SCREEN_PER_CHAIN]
 
-        # Determine the quote token for this chain
-        # Prioritize USDC if available, otherwise use native asset
-        # USDC_ADDRESSES is now imported from backend.inch_service
+        # Determine the quote token for this chain: try USDC, then USDT, then Native, with specific WETH fallback on ETH
+        
+        quote_token_address = None
+        quote_token_symbol = ""
+        quote_token_type = "" # To track what we are using: "USDC", "USDT", "NATIVE", "WETH"
 
+        # Attempt 1: USDC
         if chain_id in USDC_ADDRESSES:
             quote_token_address = USDC_ADDRESSES[chain_id]
-            if chain_id == ETHEREUM_CHAIN_ID:
-                quote_token_symbol = "USDC"  # Simplified for Ethereum
-            elif chain_id == BASE_CHAIN_ID: # Example, BASE_CHAIN_ID should be defined or imported
-                quote_token_symbol = "USDC_BASE"
-            # Add more specific USDC symbols as needed, align with USDC_ADDRESSES in inch_service
-            # Example for Arbitrum - ensure ARBITRUM_CHAIN_ID is available if used here
-            # elif chain_id == ARBITRUM_CHAIN_ID: 
-            #     quote_token_symbol = "USDC_ARB" # Or "USDCe_ARB" depending on the address used
-            else:
-                quote_token_symbol = f"USDC_on_{chain_name}"
+            quote_token_symbol = f"USDC_on_{chain_name}"
+            quote_token_type = "USDC"
+            logger.info(f"Attempting primary quote: {quote_token_symbol} ({quote_token_address}) for {chain_name}")
         else:
-            quote_token_address = NATIVE_ASSET_ADDRESS
-            if chain_id == ETHEREUM_CHAIN_ID:
-                quote_token_symbol = "ETH" # Native asset on Ethereum is ETH
-            else:
-                quote_token_symbol = f"Native-{chain_name.split()[0]}"
+            logger.info(f"USDC address not available for {chain_name}. Will try USDT or Native.")
 
-        logger.info(f"Using '{quote_token_symbol}' ({quote_token_address}) as quote token for {chain_name}.")
 
         # Step 2: For each selected token, get OHLCV data
         for token_info in tokens_to_screen:
@@ -157,46 +149,104 @@ def test_fetch_ohlcv_for_top_tokens_per_chain_simple():
 
             logger.info(f"  Processing token: {base_token_symbol} ({base_token_name} - {base_token_address[:10]}...) on {chain_name}")
 
-            if base_token_address.lower() == quote_token_address.lower():
-                logger.info(f"    Skipping OHLCV for {base_token_symbol} against itself ({quote_token_symbol}).")
+            # Initialize effective quote details for this token, might change with fallbacks
+            effective_quote_address = quote_token_address
+            effective_quote_symbol = quote_token_symbol
+            effective_quote_type = quote_token_type
+            
+            # Fallback to Native if no USDC was initially set (e.g. USDC not configured for chain)
+            if not effective_quote_address:
+                logger.info(f"    No initial USDC quote for {chain_name}. Attempting USDT or Native for {base_token_symbol}.")
+                # Try USDT first if not USDC
+                if chain_id in USDT_ADDRESSES:
+                    effective_quote_address = USDT_ADDRESSES[chain_id]
+                    effective_quote_symbol = f"USDT_on_{chain_name}"
+                    effective_quote_type = "USDT"
+                    logger.info(f"    Using USDT as quote: {effective_quote_symbol} ({effective_quote_address}) for {base_token_symbol} on {chain_name}")
+                else: # Fallback to Native if no USDT
+                    effective_quote_address = NATIVE_ASSET_ADDRESS
+                    effective_quote_symbol = f"Native_{chain_name.split()[0]}"
+                    effective_quote_type = "NATIVE"
+                    logger.info(f"    USDT not available. Using Native asset as quote: {effective_quote_symbol} ({effective_quote_address}) for {base_token_symbol} on {chain_name}")
+            
+            if not effective_quote_address: # Should not happen if native is always a fallback
+                logger.error(f"    CRITICAL: Could not determine any quote token for {base_token_symbol} on {chain_name}. Skipping.")
+                continue
+
+            if base_token_address.lower() == effective_quote_address.lower():
+                logger.info(f"    Skipping OHLCV for {base_token_symbol} against itself ({effective_quote_symbol}).")
                 continue
             
-            pair_desc = f"{base_token_symbol}/{quote_token_symbol} on {chain_name}"
+            pair_desc = f"{base_token_symbol}/{effective_quote_symbol} on {chain_name}"
             logger.info(f"    Fetching daily OHLCV for {pair_desc}...")
 
             ohlcv_data = None
-            current_quote_token_address = quote_token_address
-            current_quote_token_symbol = quote_token_symbol
             
             try:
-                ohlcv_data = get_ohlcv_data(base_token_address, current_quote_token_address, PERIOD_DAILY_SECONDS, chain_id)
+                # Initial attempt with the determined quote (USDC or Native or initial USDT)
+                ohlcv_data = get_ohlcv_data(base_token_address, effective_quote_address, PERIOD_DAILY_SECONDS, chain_id)
+            
             except OneInchAPIError as e:
-                original_pair_desc = f"{base_token_symbol}/{current_quote_token_symbol} on {chain_name}"
-                logger.error(f"    API Error fetching OHLCV for {original_pair_desc}: {e}")
-                # Check if it's Ethereum, the quote was USDC, and the error is "charts not supported"
-                if chain_id == ETHEREUM_CHAIN_ID and \
-                   current_quote_token_address == USDC_ADDRESSES.get(ETHEREUM_CHAIN_ID) and \
-                   e.response_text and "charts not supported for chosen tokens" in e.response_text:
-                    
-                    logger.warning(f"    Attempting fallback to WETH for {base_token_symbol} on Ethereum.")
-                    current_quote_token_address = WETH_ETHEREUM_ADDRESS
-                    current_quote_token_symbol = "WETH" # Simplified WETH symbol for Ethereum
-                    pair_desc = f"{base_token_symbol}/{current_quote_token_symbol} on {chain_name}" # Update pair_desc for logging
-                    logger.info(f"    Fetching daily OHLCV for {pair_desc}...")
-                    try:
-                        ohlcv_data = get_ohlcv_data(base_token_address, current_quote_token_address, PERIOD_DAILY_SECONDS, chain_id)
-                    except OneInchAPIError as e_weth:
-                        logger.error(f"    API Error fetching OHLCV with WETH fallback for {pair_desc}: {e_weth}")
-                    except Exception as e_weth_unexpected:
-                        logger.error(f"    Unexpected error with WETH fallback for {pair_desc}: {e_weth_unexpected}")
-            except Exception as e:
-                pair_desc_for_error = f"{base_token_symbol}/{current_quote_token_symbol} on {chain_name}"
-                logger.error(f"    Unexpected error fetching OHLCV for {pair_desc_for_error}: {e}")
+                logger.error(f"    API Error fetching OHLCV for {pair_desc}: {e}")
+                
+                # Fallback logic:
+                # If the first attempt was USDC and it failed with "charts not supported":
+                if effective_quote_type == "USDC" and e.response_text and "charts not supported for chosen tokens" in e.response_text:
+                    logger.warning(f"    USDC quote for {pair_desc} not supported. Attempting fallback to USDT.")
+                    if chain_id in USDT_ADDRESSES:
+                        effective_quote_address = USDT_ADDRESSES[chain_id]
+                        effective_quote_symbol = f"USDT_on_{chain_name}"
+                        effective_quote_type = "USDT"
+                        pair_desc = f"{base_token_symbol}/{effective_quote_symbol} on {chain_name}" # Update pair_desc
+                        logger.info(f"    Fetching daily OHLCV for {pair_desc} (USDT fallback)...")
+                        try:
+                            ohlcv_data = get_ohlcv_data(base_token_address, effective_quote_address, PERIOD_DAILY_SECONDS, chain_id)
+                        except OneInchAPIError as e_usdt:
+                            logger.error(f"    API Error on USDT fallback for {pair_desc}: {e_usdt}")
+                            # If USDT also fails with "charts not supported" on Ethereum, try WETH
+                            if chain_id == ETHEREUM_CHAIN_ID and e_usdt.response_text and "charts not supported for chosen tokens" in e_usdt.response_text:
+                                logger.warning(f"    USDT quote also not supported for {pair_desc} on Ethereum. Attempting WETH fallback.")
+                                effective_quote_address = WETH_ETHEREUM_ADDRESS
+                                effective_quote_symbol = "WETH_on_Ethereum"
+                                effective_quote_type = "WETH"
+                                pair_desc = f"{base_token_symbol}/{effective_quote_symbol} on {chain_name}"
+                                logger.info(f"    Fetching daily OHLCV for {pair_desc} (WETH fallback)...")
+                                try:
+                                    ohlcv_data = get_ohlcv_data(base_token_address, effective_quote_address, PERIOD_DAILY_SECONDS, chain_id)
+                                except OneInchAPIError as e_weth:
+                                    logger.error(f"    API Error on WETH fallback for {pair_desc}: {e_weth}")
+                                except Exception as e_weth_unexpected:
+                                    logger.error(f"    Unexpected error on WETH fallback for {pair_desc}: {e_weth_unexpected}")
+                        except Exception as e_usdt_unexpected:
+                             logger.error(f"    Unexpected error on USDT fallback for {pair_desc}: {e_usdt_unexpected}")
+                    else:
+                        logger.warning(f"    USDT not configured for {chain_name}. Cannot fallback from USDC to USDT.")
+                        # If on Ethereum and original USDC failed, and no USDT, directly try WETH
+                        if chain_id == ETHEREUM_CHAIN_ID: # No USDT, try WETH on ETH
+                            logger.warning(f"    Attempting WETH fallback directly for {base_token_symbol} on Ethereum as USDC failed and USDT not available.")
+                            effective_quote_address = WETH_ETHEREUM_ADDRESS
+                            effective_quote_symbol = "WETH_on_Ethereum"
+                            effective_quote_type = "WETH"
+                            pair_desc = f"{base_token_symbol}/{effective_quote_symbol} on {chain_name}"
+                            logger.info(f"    Fetching daily OHLCV for {pair_desc} (WETH fallback)...")
+                            try:
+                                ohlcv_data = get_ohlcv_data(base_token_address, effective_quote_address, PERIOD_DAILY_SECONDS, chain_id)
+                            except OneInchAPIError as e_weth:
+                                logger.error(f"    API Error on WETH fallback for {pair_desc}: {e_weth}")
+                            except Exception as e_weth_unexpected:
+                                logger.error(f"    Unexpected error on WETH fallback for {pair_desc}: {e_weth_unexpected}")
+                
+                # If the first attempt was NOT USDC, or the error was different, or not on ETH for WETH fallback:
+                # No further automatic fallbacks in this branch beyond initial Native if USDC/USDT addresses weren't present.
+                # The ohlcv_data will remain None or hold the error from the primary attempt.
+
+            except Exception as e_unexpected:
+                logger.error(f"    Unexpected error fetching OHLCV for {pair_desc}: {e_unexpected}")
             
             time.sleep(API_CALL_DELAY_SECONDS)
 
-            # Construct pair_desc for successful validation/logging using the latest current_quote_token_symbol
-            final_pair_desc = f"{base_token_symbol}/{current_quote_token_symbol} on {chain_name}"
+            # Construct pair_desc for successful validation/logging using the latest effective_quote_symbol
+            final_pair_desc = f"{base_token_symbol}/{effective_quote_symbol} on {chain_name}"
 
             if ohlcv_data:
                 try:
