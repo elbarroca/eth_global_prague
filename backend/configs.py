@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv() # Load variables from .env file
 
-ONE_INCH_API_KEY = os.environ.get("ONE_INCH_API_KEY")
+ONE_INCH_API_KEY = os.getenv("ONE_INCH_API_KEY")
 
 NATIVE_ASSET_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
