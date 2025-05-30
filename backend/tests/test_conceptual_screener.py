@@ -36,7 +36,7 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 # --- Configuration ---
-API_KEY = os.environ.get("ONE_INCH_API_KEY")
+API_KEY = os.getenv("ONE_INCH_API_KEY")
 if not API_KEY:
     logger.warning("Using default/example 1inch API Key because ONE_INCH_API_KEY environment variable is not set. Full access might be restricted.")
     API_KEY = "PrA0uavUMpVOig4aopY0MQMqti3gO19d"

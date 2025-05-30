@@ -3,7 +3,9 @@ from fastapi import FastAPI, HTTPException, Query, Body
 from typing import List, Optional, Dict, Any
 import logging
 import time
-import asyncio # New import
+import json
+import asyncio
+import uvicorn
 from pydantic import BaseModel, Field
 from services.mongo_service import (
     connect_to_mongo,
@@ -13,9 +15,9 @@ from services.mongo_service import (
 )
 
 from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest
-from services import one_inch_data_service # Fixed: changed from one_inch_service to one_inch_data_service
-from services import one_inch_fusion_service # Import the fusion service
-from configs import * # Changed from relative to absolute import
+from services import one_inch_data_service
+from services import one_inch_fusion_service
+from configs import *
 
 # Configure logging for the main application
 logger = logging.getLogger(__name__)
@@ -35,27 +37,25 @@ app = FastAPI(
 
 # --- NEW: FastAPI Startup and Shutdown Events for MongoDB and HTTP Client ---
 @app.on_event("startup")
-async def startup_app_clients(): # Renamed and made async
+async def startup_app_clients():
     try:
-        await connect_to_mongo() # Await async connection
+        await connect_to_mongo()
         logger.info("MongoDB connection established successfully on startup.")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB on startup: {e}")
-        # Depending on policy, you might want to prevent app startup if DB connection fails
     
     try:
-        await one_inch_data_service.get_http_client() # Initialize the shared HTTP client
+        await one_inch_data_service.get_http_client()
         logger.info("Global HTTPX client initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize global HTTPX client: {e}")
 
-
 @app.on_event("shutdown")
-async def shutdown_app_clients(): # Renamed and made async
-    await close_mongo_connection() # Await async close
+async def shutdown_app_clients():
+    await close_mongo_connection()
     logger.info("MongoDB connection closed on shutdown.")
     
-    await one_inch_data_service.close_http_client() # Close the shared HTTP client
+    await one_inch_data_service.close_http_client()
     logger.info("Global HTTPX client closed.")
 # --- END NEW EVENTS ---
 
@@ -64,7 +64,7 @@ API_CALL_DELAY_SECONDS = 0.75 # Be respectful
 SCREENING_TIMEOUT_SECONDS = 60 # 1 minute timeout for entire screening process
 
 @app.get("/screen_tokens/{chain_id}", response_model=List[Dict[str, Any]])
-async def screen_tokens_on_chain( # Made async
+async def screen_tokens_on_chain(
     chain_id: int,
     timeframe: str = Query("daily", enum=["hourly", "daily"], description="Timeframe for OHLCV data ('daily', 'hourly').")
 ):
@@ -110,7 +110,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
 
     # Step 1: Fetch whitelisted tokens
     try:
-        all_tokens_on_chain = await one_inch_data_service.fetch_1inch_whitelisted_tokens(chain_id_filter=chain_id) # Await async call
+        all_tokens_on_chain = await one_inch_data_service.fetch_1inch_whitelisted_tokens(chain_id_filter=chain_id)
     except one_inch_data_service.OneInchAPIError as e:
         logger.error(f"API Error fetching token list for {chain_name}: {e}")
         raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to fetch token list from 1inch: {str(e)}")
@@ -227,7 +227,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
             pair_desc = f"{base_token_symbol}/{quote_symbol} on {chain_name}"
             logger.info(f"Processing OHLCV for {pair_desc} (using {quote_name}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
 
-            cached_ohlcv = await get_ohlcv_from_db( # Await async call
+            cached_ohlcv = await get_ohlcv_from_db(
                 chain_id, base_token_address, quote_address, period_seconds, timeframe
             )
             if cached_ohlcv is not None: # Not None means fresh data found (empty list is valid cached data)
@@ -244,7 +244,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
             await asyncio.sleep(API_CALL_DELAY_SECONDS) # Use asyncio.sleep
 
             try:
-                ohlcv_api_response = await one_inch_data_service.get_ohlcv_data( # Await async call
+                ohlcv_api_response = await one_inch_data_service.get_ohlcv_data(
                     base_token_address, quote_address, period_seconds, chain_id
                 )
                 if ohlcv_api_response and "data" in ohlcv_api_response:
@@ -260,7 +260,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                     
                     # --- NEW: Store in MongoDB ---
                     if api_candles: # Only store if data is not empty
-                        await store_ohlcv_in_db( # Await async call
+                        await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
                             period_seconds, timeframe, api_candles
                         )
@@ -284,22 +284,10 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                 last_error_message_for_token = f"Unexpected error (with {quote_name}): {str(e)}"
                 current_result["error"] = last_error_message_for_token
             
-            # Delay before next quote attempt FOR THIS TOKEN (if previous failed and more attempts left)
-            # This is already handled by the time.sleep(API_CALL_DELAY_SECONDS) at the start of this inner loop
-            # if not ohlcv_fetched_successfully and attempt_idx < len(potential_quotes) - 1:
-            #     logger.info(f"Attempt with {quote_name} for {base_token_symbol} failed. Delaying before trying next quote token for this base token.")
-            #     time.sleep(API_CALL_DELAY_SECONDS) # This delay might be redundant now
-        
         if not ohlcv_fetched_successfully:
              current_result["error"] = last_error_message_for_token 
 
         screener_results.append(current_result)
-        # Delay between processing different BASE TOKENS (regardless of success/failure of previous token)
-        # This delay is now managed before each API call attempt within the quote loop
-        # time.sleep(API_CALL_DELAY_SECONDS) 
-        # However, if all data for a base token came from DB, no API call was made, so no delay.
-        # If a base token processing involved any API call, a delay occurred.
-        # Consider if a small uniform delay is needed here if all quote attempts for a base token failed before any API call (e.g. all self-pairs)
 
     logger.info(f"Screening completed for chain: {chain_name}. Returning {len(screener_results)} results.")
     
@@ -381,6 +369,32 @@ async def submit_fusion_order(request: FusionOrderSubmitRequest):
         logger.error(f"Unexpected error submitting Fusion+ order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+@app.get("/fusion/order_status/{order_hash}", response_model=Dict[str, Any])
+async def get_order_status(order_hash: str):
+    """
+    Check the status of a Fusion+ order
+    """
+    logger.info(f"Checking status for order: {order_hash}")
+    
+    try:
+        status = one_inch_fusion_service.check_order_status(order_hash)
+        return status
+    except one_inch_fusion_service.OneInchAPIError as e:
+        logger.error(f"API Error checking order status: {e}")
+        raise HTTPException(status_code=e.status_code or 503, detail=f"Failed to check order status: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error checking order status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the 1inch Token Screener API. Use /docs for API documentation."}
+    return {"message": "Welcome to the 1inch API. Use /docs for API documentation."}
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
+    )
