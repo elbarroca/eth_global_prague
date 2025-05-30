@@ -1,4 +1,5 @@
 # backend/db/mongodb_utils.py
+import os
 import pymongo
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 from pymongo.errors import ConnectionFailure, OperationFailure
@@ -6,6 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
+
 import asyncio
 
 # --- Logging Configuration ---
@@ -18,9 +20,9 @@ if not logger.handlers:
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-# --- MongoDB Configuration ---
-MONGO_URI = "mongodb://root:RicardoMongoDB@74.50.127.165:27017/admin"
-DATABASE_NAME = "ETH_PRAGUE"
+# --- MongoDB Configuration ---\
+MONGO_URI = os.getenv('MONGO_URI')
+DATABASE_NAME = os.getenv('DATABASE_NAME')
 OHLCV_COLLECTION_NAME = "ohlcv_data"
 
 # Cache durations
