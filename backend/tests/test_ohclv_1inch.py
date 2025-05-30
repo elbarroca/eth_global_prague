@@ -5,6 +5,31 @@ import requests
 import time
 import logging
 import os
+import sys # Added for path manipulation
+from pathlib import Path # Added for path manipulation
+
+# Add the parent directory to the Python path so we can import backend modules
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# --- Import service functions ---
+from backend.one_inch_service import (
+    get_ohlcv_data, 
+    get_cross_prices_data,
+    fetch_1inch_whitelisted_tokens,
+    OneInchAPIError,
+    NATIVE_ASSET_ADDRESS,  # Import NATIVE_ASSET_ADDRESS
+    USDC_ADDRESSES,      # Import USDC_ADDRESSES
+    USDC_ETHEREUM_ADDRESS, # Keep for direct use if needed, or remove if covered by USDC_ADDRESSES
+    USDC_BASE_ADDRESS,     # Keep for direct use if needed, or remove if covered by USDC_ADDRESSES
+    USDC_ARBITRUM_CHARTS_API_ADDRESS, # Keep for direct use if needed
+    WETH_ETHEREUM_ADDRESS, # Keep for direct use
+    ETHEREUM_CHAIN_ID,     # Keep for direct use
+    BASE_CHAIN_ID,         # Keep for direct use
+    ARBITRUM_CHAIN_ID,     # Keep for direct use
+    PERIOD_DAILY_SECONDS,  # Keep for direct use
+    GRANULARITY_DAILY,     # Keep for direct use
+    GRANULARITY_HOURLY     # Keep for direct use
+)
 
 # --- Logging Configuration ---
 logger = logging.getLogger(__name__)
@@ -26,26 +51,11 @@ API_KEY = os.environ.get("ONE_INCH_API_KEY", "PrA0uavUMpVOig4aopY0MQMqti3gO19d")
 if API_KEY == "PrA0uavUMpVOig4aopY0MQMqti3gO19d":
     logger.warning("Using default/example 1inch API Key. Consider setting ONE_INCH_API_KEY environment variable for full access.")
 
-NATIVE_ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-USDC_ETHEREUM_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-USDC_BASE_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-
-# --- MODIFICATION for Arbitrum USDC Address for CHARTS API ---
-# Official Native USDC on Arbitrum: 0xaf88d065e77c8cC2239327C5EDb3A53fC7Cb328 (was causing 400 on Charts)
-# Bridged USDC (USDC.e) on Arbitrum: 0xff970a61a04b1ca14834a43f5de4533ebddb5cc8
-# Let's try USDC.e for the Charts API as it's a common alternative if native isn't directly supported by an aggregator's charting.
-USDC_ARBITRUM_CHARTS_API_ADDRESS = "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8" # Bridged USDC (USDC.e)
-USDC_ARBITRUM_NATIVE_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A53fC7Cb328" # Native USDC (for Portfolio API if it ever works)
-
-WETH_ETHEREUM_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-
-ETHEREUM_CHAIN_ID = 1
-BASE_CHAIN_ID = 8453
-ARBITRUM_CHAIN_ID = 42161
-
-PERIOD_DAILY_SECONDS = 86400
-GRANULARITY_DAILY = "1d"
-GRANULARITY_HOURLY = "1h"
+# NATIVE_ETH_ADDRESS is now NATIVE_ASSET_ADDRESS from inch_service
+# USDC_ETHEREUM_ADDRESS, USDC_BASE_ADDRESS are available from inch_service via USDC_ADDRESSES or direct import
+# USDC_ARBITRUM_CHARTS_API_ADDRESS is available from inch_service via USDC_ADDRESSES or direct import
+# WETH_ETHEREUM_ADDRESS is available from inch_service or defined locally if specific
+# Chain IDs and periods are available from inch_service or defined locally
 
 # --- Mappings for Portfolio API v2 parameters ---
 GRANULARITY_MAP_PORTFOLIO_V2 = {
@@ -182,10 +192,10 @@ def validate_cross_prices_response_structure(response_data: list, request_descri
     logger.info(f"Successfully validated Cross Prices response structure for {request_description} with {len(response_data)} price points (Portfolio v2 structure).")
 
 @pytest.mark.parametrize("token0, token1, chain_id, network_name", [
-    (NATIVE_ETH_ADDRESS, USDC_ETHEREUM_ADDRESS, ETHEREUM_CHAIN_ID, "Ethereum (ETH/USDC)"),
-    (WETH_ETHEREUM_ADDRESS, USDC_ETHEREUM_ADDRESS, ETHEREUM_CHAIN_ID, "Ethereum (WETH/USDC)"),
-    (NATIVE_ETH_ADDRESS, USDC_BASE_ADDRESS, BASE_CHAIN_ID, "Base (ETH/USDC)"),
-    (NATIVE_ETH_ADDRESS, USDC_ARBITRUM_CHARTS_API_ADDRESS, ARBITRUM_CHAIN_ID, "Arbitrum (ETH/USDC.e Bridged)"), # Using USDC.e for Arbitrum Charts
+    (NATIVE_ASSET_ADDRESS, USDC_ADDRESSES[ETHEREUM_CHAIN_ID], ETHEREUM_CHAIN_ID, "Ethereum (Native/USDC)"),
+    (WETH_ETHEREUM_ADDRESS, USDC_ADDRESSES[ETHEREUM_CHAIN_ID], ETHEREUM_CHAIN_ID, "Ethereum (WETH/USDC)"),
+    (NATIVE_ASSET_ADDRESS, USDC_ADDRESSES[BASE_CHAIN_ID], BASE_CHAIN_ID, "Base (Native/USDC)"),
+    (NATIVE_ASSET_ADDRESS, USDC_ADDRESSES[ARBITRUM_CHAIN_ID], ARBITRUM_CHAIN_ID, "Arbitrum (Native/USDC.e Bridged)"),
 ])
 def test_get_eth_usdc_ohlcv_on_multiple_networks(token0, token1, chain_id, network_name):
     logger.info(f"--- Starting Charts API test for {network_name} (Chain ID: {chain_id}) ---")
@@ -197,10 +207,9 @@ def test_get_eth_usdc_ohlcv_on_multiple_networks(token0, token1, chain_id, netwo
     logger.info(f"--- Charts API Test for {network_name} PASSED ---")
 
 @pytest.mark.parametrize("token_address, vs_token_address, chain_id, granularity, network_name", [
-    (WETH_ETHEREUM_ADDRESS, USDC_ETHEREUM_ADDRESS, ETHEREUM_CHAIN_ID, GRANULARITY_DAILY, "Ethereum (WETH/USDC Daily) Portfolio"),
-    (NATIVE_ETH_ADDRESS, USDC_ETHEREUM_ADDRESS, ETHEREUM_CHAIN_ID, GRANULARITY_HOURLY, "Ethereum (ETH/USDC Hourly) Portfolio"),
-    # Using BRIDGED USDC.e for Arbitrum here for Portfolio API, similar to Charts API.
-    (NATIVE_ETH_ADDRESS, USDC_ARBITRUM_CHARTS_API_ADDRESS, ARBITRUM_CHAIN_ID, GRANULARITY_DAILY, "Arbitrum (ETH/USDC.e Bridged) Portfolio")
+    (WETH_ETHEREUM_ADDRESS, USDC_ADDRESSES[ETHEREUM_CHAIN_ID], ETHEREUM_CHAIN_ID, GRANULARITY_DAILY, "Ethereum (WETH/USDC Daily) Portfolio"),
+    (NATIVE_ASSET_ADDRESS, USDC_ADDRESSES[ETHEREUM_CHAIN_ID], ETHEREUM_CHAIN_ID, GRANULARITY_HOURLY, "Ethereum (Native/USDC Hourly) Portfolio"),
+    (NATIVE_ASSET_ADDRESS, USDC_ADDRESSES[ARBITRUM_CHAIN_ID], ARBITRUM_CHAIN_ID, GRANULARITY_DAILY, "Arbitrum (Native/USDC.e Bridged) Portfolio")
 ])
 def test_get_cross_prices_on_multiple_networks(token_address, vs_token_address, chain_id, granularity, network_name):
     logger.info(f"--- Starting Portfolio API test for {network_name} (Gran: {granularity}) ---")
@@ -212,6 +221,150 @@ def test_get_cross_prices_on_multiple_networks(token_address, vs_token_address, 
     validate_cross_prices_response_structure(cross_prices_data, req_desc)
     logger.info(f"CrossPrices data OK for {req_desc}. Sample: {cross_prices_data[0] if cross_prices_data else 'No data'}")
     logger.info(f"--- Portfolio API Test for {network_name} PASSED (unexpected if xfail) ---")
+
+# --- Token API Helper Functions (adapted from plan) ---
+def validate_token_list_structure(token_list: list, chain_id_description: str):
+    logger.info(f"Validating token list structure for {chain_id_description}")
+    assert isinstance(token_list, list), f"Token list is not a list for {chain_id_description}"
+    if not token_list:
+        # It's possible a chain might have no whitelisted tokens, or the filter yields none.
+        logger.warning(f"Received empty token list for {chain_id_description}. This might be valid.")
+        return
+    for i, token in enumerate(token_list):
+        assert isinstance(token, dict), f"Token #{i} is not a dict for {chain_id_description}"
+        # 'logoURI' is optional, 'chainId' is added during processing in the service.
+        expected_keys = {'address', 'symbol', 'name', 'decimals', 'chainId', 'logoURI'}
+        assert expected_keys.issubset(token.keys()), \
+            f"Token #{i} for {chain_id_description} missing keys. Expected subset: {expected_keys}, Got: {list(token.keys())}"
+        assert isinstance(token['address'], str) and token['address'].startswith('0x'), f"Token #{i} address invalid: {token['address']}"
+        assert isinstance(token['symbol'], str) and len(token['symbol']) > 0, f"Token #{i} symbol invalid: {token['symbol']}"
+        assert isinstance(token['name'], str), f"Token #{i} name invalid: {token['name']}"
+        assert isinstance(token['decimals'], int), f"Token #{i} decimals invalid: {token['decimals']}"
+        # chainId can be N/A if it could not be determined from a flat list without a filter
+        assert isinstance(token['chainId'], (int, str)), f"Token #{i} chainId invalid: {token['chainId']}"
+        if isinstance(token['chainId'], str):
+            assert token['chainId'] == 'N/A', f"Token #{i} chainId string is not 'N/A': {token['chainId']}"
+        assert isinstance(token['logoURI'], str), f"Token #{i} logoURI invalid: {token['logoURI']}"
+    logger.info(f"Successfully validated token list structure for {chain_id_description} with {len(token_list)} tokens.")
+
+# --- Test Cases for Token API ---
+@pytest.mark.parametrize("chain_id, network_name", [
+    (ETHEREUM_CHAIN_ID, "Ethereum"),
+    (BASE_CHAIN_ID, "Base"),
+    (ARBITRUM_CHAIN_ID, "Arbitrum"),
+    (137, "Polygon"), # Example of another chain ID that might be in the list
+])
+def test_get_whitelisted_tokens_for_chain(chain_id, network_name):
+    logger.info(f"--- Starting Token API test for {network_name} (Chain ID: {chain_id}) ---")
+    try:
+        token_list = fetch_1inch_whitelisted_tokens(chain_id_filter=chain_id)
+    except OneInchAPIError as e:
+        pytest.fail(f"Token API request failed for {network_name}: {e}")
+        return
+
+    assert token_list is not None, f"Failed to fetch token list for {network_name}, result is None."
+    # We can't assert len(token_list) > 0 because a chain might legitimately have 0 whitelisted tokens or not be in the API response
+    if not token_list:
+        logger.warning(f"Received an empty token list for {network_name}. This may be expected if the chain has no whitelisted tokens or is not in the provider's list.")
+    
+    validate_token_list_structure(token_list, network_name)
+    
+    logger.info(f"Successfully fetched and validated token list for {network_name}. Found {len(token_list)} tokens.")
+    if token_list:
+        logger.info(f"Sample token for {network_name}: {token_list[0]}")
+    logger.info(f"--- Token API Test for {network_name} (Chain ID: {chain_id}) PASSED ---")
+
+# --- Screener Test (Conceptual) ---
+@pytest.mark.skip(reason="Conceptual test, involves multiple API calls and may be slow/flaky. Run manually if needed.")
+def test_run_screener_example_flow():
+    TARGET_CHAIN_ID = ETHEREUM_CHAIN_ID 
+    QUOTE_TOKEN_ADDRESS = USDC_ADDRESSES[ETHEREUM_CHAIN_ID]
+    # Supported seconds for OHLCV: 300 ,900 ,3600 ,14400 ,86400 ,604800
+    SCREENER_PERIODS_SECONDS = [PERIOD_DAILY_SECONDS, 14400] 
+    MAX_TOKENS_TO_SCREEN = 2 # Reduced for test brevity
+
+    logger.info(f"--- Starting Screener Example Flow for Chain ID {TARGET_CHAIN_ID} ---")
+
+    # 1. Fetch a list of "popular" tokens (using whitelisted as proxy)
+    logger.info(f"Fetching whitelisted tokens for chain {TARGET_CHAIN_ID}...")
+    try:
+        all_popular_tokens = fetch_1inch_whitelisted_tokens(chain_id_filter=TARGET_CHAIN_ID)
+    except OneInchAPIError as e:
+        pytest.fail(f"Failed to get popular tokens for screener due to API error: {e}")
+        return
+        
+    assert all_popular_tokens is not None, "Token list fetch returned None."
+    if not all_popular_tokens:
+        logger.warning(f"No whitelisted tokens found for chain {TARGET_CHAIN_ID}. Screener test cannot proceed fully.")
+        # Depending on strictness, you might want to pytest.skip or pass here.
+        # For now, let it proceed to see if it handles empty list gracefully.
+
+    tokens_to_screen = all_popular_tokens[:MAX_TOKENS_TO_SCREEN]
+    if not tokens_to_screen:
+        logger.info("No tokens selected to screen (either MAX_TOKENS_TO_SCREEN is 0 or no tokens were fetched).")
+    else:
+        logger.info(f"Selected {len(tokens_to_screen)} tokens to screen: {[t['symbol'] for t in tokens_to_screen]}")
+
+    screener_results = {}
+
+    # 2. For each token, get OHLCV data for specified periods
+    for token_info in tokens_to_screen:
+        token_address = token_info['address']
+        token_symbol = token_info['symbol']
+        logger.info(f"Processing token: {token_symbol} ({token_address})")
+        screener_results[token_symbol] = {'address': token_address, 'name': token_info['name'], 'ohlcv_data': {}}
+
+        for period_seconds in SCREENER_PERIODS_SECONDS:
+            period_desc = f"{period_seconds // 3600}h" if period_seconds < PERIOD_DAILY_SECONDS else f"{period_seconds // PERIOD_DAILY_SECONDS}d"
+            logger.info(f"  Fetching {period_desc} OHLCV against {QUOTE_TOKEN_ADDRESS[:6]}...")
+            
+            if token_address.lower() == QUOTE_TOKEN_ADDRESS.lower():
+                logger.info(f"  Skipping OHLCV for {token_symbol} vs itself.")
+                screener_results[token_symbol]['ohlcv_data'][period_seconds] = "Self-pair"
+                continue
+            
+            ohlcv_data = None
+            try:
+                ohlcv_data = get_ohlcv_data(token_address, QUOTE_TOKEN_ADDRESS, period_seconds, TARGET_CHAIN_ID)
+            except OneInchAPIError as e:
+                logger.error(f"  API Error fetching OHLCV for {token_symbol} {period_desc}: {e}")
+            except Exception as e:
+                 logger.error(f"  Unexpected error fetching OHLCV for {token_symbol} {period_desc}: {e}")
+
+            if ohlcv_data and 'data' in ohlcv_data and ohlcv_data['data']:
+                try:
+                    validate_ohlcv_response_structure(ohlcv_data, f"{token_symbol} {period_desc}")
+                    screener_results[token_symbol]['ohlcv_data'][period_seconds] = ohlcv_data['data']
+                    logger.info(f"  Successfully fetched {len(ohlcv_data['data'])} candles for {period_desc}.")
+                except AssertionError as e:
+                    logger.warning(f"  OHLCV data validation failed for {token_symbol} {period_desc}: {e}")
+                    screener_results[token_symbol]['ohlcv_data'][period_seconds] = "Validation failed"
+            else:
+                logger.warning(f"  No OHLCV data or invalid response for {token_symbol} {period_desc}. Data: {str(ohlcv_data)[:100]}")
+                screener_results[token_symbol]['ohlcv_data'][period_seconds] = "No data/Error"
+            
+            time.sleep(0.75) # API Rate Limiting
+
+    logger.info("--- Screener Example Flow Completed ---")
+    logger.info(f"Screener Results (summary):")
+    if not screener_results:
+        logger.info("No results to display as no tokens were processed.")
+
+    for symbol, data in screener_results.items():
+        logger.info(f"Token: {symbol} ({data['name']})")
+        if 'ohlcv_data' in data:
+            for period, ohlcv_result in data['ohlcv_data'].items():
+                status = "Unknown"
+                if isinstance(ohlcv_result, list) and ohlcv_result:
+                    status = f"Data received ({len(ohlcv_result)} candles)"
+                    logger.info(f"    Latest close for period {period}s: {ohlcv_result[-1]['close']}")
+                elif isinstance(ohlcv_result, str):
+                    status = ohlcv_result # e.g., "Self-pair", "Validation failed", "No data/Error"
+                else:
+                    status = "No data/Error or unexpected format"
+                logger.info(f"  Period {period}s: {status}")
+        else:
+            logger.info("  No OHLCV data found in results.")
 
 @pytest.fixture(scope="function", autouse=True)
 def test_case_delay():
