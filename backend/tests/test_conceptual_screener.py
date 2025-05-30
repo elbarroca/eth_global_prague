@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # --- Import service functions ---
-from backend.one_inch_service import (
+from backend.services.one_inch_service import (
     get_ohlcv_data,
     fetch_1inch_whitelisted_tokens,
     OneInchAPIError,
