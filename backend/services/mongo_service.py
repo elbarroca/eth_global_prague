@@ -6,7 +6,7 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfolioData
 
 import asyncio
 
@@ -24,28 +24,12 @@ if not logger.handlers:
 MONGO_URI = os.getenv('MONGO_URI')
 DATABASE_NAME = os.getenv('DATABASE_NAME')
 OHLCV_COLLECTION_NAME = "ohlcv_data"
+PORTFOLIO_COLLECTION_NAME = "portfolio_cache"
 
 # Cache durations
 CACHE_DURATION_HOURLY_SECONDS = 30 * 60  # 30 minutes (was 1 hour)
 CACHE_DURATION_DAILY_SECONDS = 4 * 60 * 60  # 4 hours (was 24 hours)
-
-
-# --- Pydantic Models for MongoDB Data ---
-class OHLVCRecord(BaseModel):
-    time: int
-    open: float
-    high: float
-    low: float
-    close: float
-
-class StoredOHLCVData(BaseModel):
-    chain_id: int
-    base_token_address: str
-    quote_token_address: str
-    period_seconds: int
-    timeframe: str # "hourly" or "daily"
-    ohlcv_candles: List[OHLVCRecord]
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+CACHE_DURATION_PORTFOLIO_SECONDS = 2 * 60 * 60  # 2 hours for portfolio cache
 
 # --- MongoDB Client ---
 mongo_client: Optional[AsyncIOMotorClient] = None
@@ -93,6 +77,10 @@ async def connect_to_mongo():
             logger.info(f"Creating collection '{OHLCV_COLLECTION_NAME}' (async)...")
             await db.create_collection(OHLCV_COLLECTION_NAME)
         
+        if PORTFOLIO_COLLECTION_NAME not in collection_names:
+            logger.info(f"Creating collection '{PORTFOLIO_COLLECTION_NAME}' (async)...")
+            await db.create_collection(PORTFOLIO_COLLECTION_NAME)
+        
         collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
         
         indexes = await collection.index_information()
@@ -115,6 +103,31 @@ async def connect_to_mongo():
         if last_updated_index_name not in indexes:
             await collection.create_index([("last_updated", pymongo.DESCENDING)], name=last_updated_index_name)
             logger.info(f"Created index '{last_updated_index_name}' on 'last_updated' field (async).")
+        
+        # Create indexes for portfolio collection
+        portfolio_collection: AsyncIOMotorCollection = db[PORTFOLIO_COLLECTION_NAME]
+        portfolio_indexes = await portfolio_collection.index_information()
+        
+        portfolio_unique_index_name = "portfolio_unique_query_idx"
+        if portfolio_unique_index_name not in portfolio_indexes:
+            await portfolio_collection.create_index(
+                [
+                    ("chain_id", pymongo.ASCENDING),
+                    ("timeframe", pymongo.ASCENDING),
+                    ("num_top_assets", pymongo.ASCENDING),
+                    ("mvo_objective", pymongo.ASCENDING),
+                    ("risk_free_rate", pymongo.ASCENDING),
+                    ("annualization_factor", pymongo.ASCENDING)
+                ],
+                name=portfolio_unique_index_name,
+                unique=True
+            )
+            logger.info(f"Created unique index '{portfolio_unique_index_name}' on '{PORTFOLIO_COLLECTION_NAME}' (async).")
+
+        portfolio_last_updated_index_name = "portfolio_last_updated_idx"
+        if portfolio_last_updated_index_name not in portfolio_indexes:
+            await portfolio_collection.create_index([("last_updated", pymongo.DESCENDING)], name=portfolio_last_updated_index_name)
+            logger.info(f"Created index '{portfolio_last_updated_index_name}' on portfolio 'last_updated' field (async).")
             
         # No explicit return needed as it sets global 'db'
     except ConnectionFailure as e:
@@ -268,6 +281,144 @@ async def store_ohlcv_in_db(
             logger.error(f"Duplicate key error (async) despite upsert logic for {base_addr_lower}/{quote_addr_lower}. Check index and query logic. Details: {e.details if hasattr(e, 'details') else 'N/A'}")
     except Exception as e:
         logger.error(f"Unexpected error during async store_ohlcv_in_db: {e}", exc_info=True)
+
+async def get_portfolio_from_cache(
+    chain_id: int,
+    timeframe: str,
+    num_top_assets: int,
+    mvo_objective: str,
+    risk_free_rate: float,
+    annualization_factor: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves cached portfolio optimization results from MongoDB.
+    """
+    global db
+    if db is None:
+        logger.error("Async database connection not available for get_portfolio_from_cache.")
+        return None
+
+    collection: AsyncIOMotorCollection = db[PORTFOLIO_COLLECTION_NAME]
+    query = {
+        "chain_id": chain_id,
+        "timeframe": timeframe,
+        "num_top_assets": num_top_assets,
+        "mvo_objective": mvo_objective,
+        "risk_free_rate": risk_free_rate,
+        "annualization_factor": annualization_factor
+    }
+    
+    logger.debug(f"Querying portfolio cache with: {query}")
+    
+    try:
+        document = await collection.find_one(query)
+        if document:
+            logger.debug(f"Found portfolio document in cache: {document.get('_id', 'no_id')} with last_updated: {document.get('last_updated', 'no_timestamp')}")
+            stored_portfolio = StoredPortfolioData(**document)
+            
+            cache_duration = timedelta(seconds=CACHE_DURATION_PORTFOLIO_SECONDS)
+            last_updated_aware = stored_portfolio.last_updated
+            if last_updated_aware.tzinfo is None:
+                last_updated_aware = last_updated_aware.replace(tzinfo=timezone.utc)
+
+            if datetime.now(timezone.utc) - last_updated_aware < cache_duration:
+                logger.info(f"Found fresh portfolio data in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets, {mvo_objective}).")
+                
+                # Convert back to the expected format
+                portfolio_weights_dict = {pw.asset_symbol: pw.weight for pw in stored_portfolio.portfolio_weights}
+                
+                return {
+                    "optimized_portfolio": {
+                        "weights": portfolio_weights_dict,
+                        "expected_annual_return": stored_portfolio.expected_annual_return,
+                        "annual_volatility": stored_portfolio.annual_volatility,
+                        "sharpe_ratio": stored_portfolio.sharpe_ratio
+                    },
+                    "selected_for_portfolio": stored_portfolio.selected_assets,
+                    "total_assets_screened": stored_portfolio.total_assets_screened,
+                    "data_source": "cache"
+                }
+            else:
+                logger.info(f"Found stale portfolio data in cache for chain {chain_id} ({timeframe}). Will re-calculate.")
+                return None
+        else:
+            logger.info(f"No portfolio data found in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets, {mvo_objective}).")
+            return None
+    except Exception as e:
+        logger.error(f"Unexpected error during get_portfolio_from_cache: {e}", exc_info=True)
+        return None
+
+async def store_portfolio_in_cache(
+    chain_id: int,
+    timeframe: str,
+    num_top_assets: int,
+    mvo_objective: str,
+    risk_free_rate: float,
+    annualization_factor: int,
+    portfolio_result: Dict[str, Any]
+):
+    """
+    Stores portfolio optimization results in MongoDB cache.
+    """
+    global db
+    if db is None:
+        logger.error("Async database connection not available for store_portfolio_in_cache.")
+        return
+
+    collection: AsyncIOMotorCollection = db[PORTFOLIO_COLLECTION_NAME]
+    
+    try:
+        # Extract data from portfolio_result
+        optimized_portfolio = portfolio_result.get("optimized_portfolio", {})
+        weights_dict = optimized_portfolio.get("weights", {})
+        selected_assets = portfolio_result.get("selected_for_portfolio", [])
+        total_screened = portfolio_result.get("total_assets_screened", 0)
+        
+        # Convert weights dict to list of PortfolioWeights
+        portfolio_weights = [
+            PortfolioWeights(asset_symbol=symbol, weight=weight)
+            for symbol, weight in weights_dict.items()
+        ]
+        
+        document_to_store = StoredPortfolioData(
+            chain_id=chain_id,
+            timeframe=timeframe,
+            num_top_assets=num_top_assets,
+            mvo_objective=mvo_objective,
+            risk_free_rate=risk_free_rate,
+            annualization_factor=annualization_factor,
+            portfolio_weights=portfolio_weights,
+            expected_annual_return=optimized_portfolio.get("expected_annual_return", 0.0),
+            annual_volatility=optimized_portfolio.get("annual_volatility", 0.0),
+            sharpe_ratio=optimized_portfolio.get("sharpe_ratio", 0.0),
+            selected_assets=selected_assets,
+            total_assets_screened=total_screened,
+            last_updated=datetime.now(timezone.utc)
+        )
+        
+        query_filter = {
+            "chain_id": chain_id,
+            "timeframe": timeframe,
+            "num_top_assets": num_top_assets,
+            "mvo_objective": mvo_objective,
+            "risk_free_rate": risk_free_rate,
+            "annualization_factor": annualization_factor
+        }
+        
+        update_data = {"$set": document_to_store.model_dump(by_alias=True)}
+
+        result = await collection.update_one(query_filter, update_data, upsert=True)
+        if result.upserted_id:
+            logger.info(f"Inserted new portfolio data into cache for chain {chain_id} ({timeframe}, {num_top_assets} assets). ID: {result.upserted_id}")
+        elif result.modified_count > 0:
+            logger.info(f"Updated existing portfolio data in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets).")
+        elif result.matched_count > 0 and result.modified_count == 0:
+            logger.info(f"Portfolio data for chain {chain_id} ({timeframe}) matched but was identical, no update needed.")
+        else:
+            logger.warning(f"Portfolio data for chain {chain_id} ({timeframe}) was not inserted or modified. Matched: {result.matched_count}")
+
+    except Exception as e:
+        logger.error(f"Unexpected error during store_portfolio_in_cache: {e}", exc_info=True)
 
 async def close_mongo_connection():
     """Closes the MongoDB connection asynchronously if it's open."""

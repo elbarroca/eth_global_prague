@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timezone
 
 # Define Pydantic models for Fusion+ API requests
 class FusionQuoteRequest(BaseModel):
@@ -45,3 +46,42 @@ class OHLCVDataPoint:
     low: float
     close: float
     volume: float 
+
+
+
+
+# --- Pydantic Models for MongoDB Data ---
+class OHLVCRecord(BaseModel):
+    time: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+class StoredOHLCVData(BaseModel):
+    chain_id: int
+    base_token_address: str
+    quote_token_address: str
+    period_seconds: int
+    timeframe: str # "hourly" or "daily"
+    ohlcv_candles: List[OHLVCRecord]
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PortfolioWeights(BaseModel):
+    asset_symbol: str
+    weight: float
+
+class StoredPortfolioData(BaseModel):
+    chain_id: int
+    timeframe: str
+    num_top_assets: int
+    mvo_objective: str
+    risk_free_rate: float
+    annualization_factor: int
+    portfolio_weights: List[PortfolioWeights]
+    expected_annual_return: float
+    annual_volatility: float
+    sharpe_ratio: float
+    selected_assets: List[str]  # List of asset symbols used
+    total_assets_screened: int
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
