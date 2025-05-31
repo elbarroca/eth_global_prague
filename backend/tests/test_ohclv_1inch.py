@@ -47,7 +47,7 @@ PORTFOLIO_API_DOMAIN = "https://api.1inch.dev/portfolio"
 CROSS_PRICES_ENDPOINT_PATH = "/integrations/prices/v2/time_range/cross_prices"
 PORTFOLIO_CROSS_PRICES_API_URL = f"{PORTFOLIO_API_DOMAIN}{CROSS_PRICES_ENDPOINT_PATH}"
 
-API_KEY = os.environ.get("ONE_INCH_API_KEY", "PrA0uavUMpVOig4aopY0MQMqti3gO19d")
+API_KEY = os.getenv("ONE_INCH_API_KEY", "PrA0uavUMpVOig4aopY0MQMqti3gO19d")
 if API_KEY == "PrA0uavUMpVOig4aopY0MQMqti3gO19d":
     logger.warning("Using default/example 1inch API Key. Consider setting ONE_INCH_API_KEY environment variable for full access.")
 

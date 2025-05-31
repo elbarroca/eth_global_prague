@@ -26,7 +26,7 @@ PORTFOLIO_CROSS_PRICES_API_URL = f"{PORTFOLIO_API_DOMAIN}{CROSS_PRICES_ENDPOINT_
 TOKEN_API_DOMAIN = "https://api.1inch.dev/token"
 MULTI_CHAIN_TOKENS_ENDPOINT_V1_3 = "/v1.3/multi-chain"
 
-API_KEY = os.environ.get("ONE_INCH_API_KEY")
+API_KEY = os.getenv("ONE_INCH_API_KEY")
 if not API_KEY:
     logger.error("ONE_INCH_API_KEY environment variable is not set. Please set it in your environment.")
 
