@@ -2,7 +2,7 @@ import {EIP712TypedData} from '@1inch/limit-order-sdk'
 import {Wallet} from 'ethers'
 import {BlockchainProviderConnector} from './blockchain-provider'
 import {add0x} from '../utils/add0x'
-// import {Web3Like} from './web3-provider-connector'
+import {Web3Like} from './web3-provider'
 
 export class PrivateKeyProviderConnector
     implements BlockchainProviderConnector
@@ -11,7 +11,7 @@ export class PrivateKeyProviderConnector
 
     constructor(
         readonly privateKey: string,
-        // protected readonly web3Provider: Web3Like
+        protected readonly web3Provider: Web3Like
     ) {
         this.wallet = new Wallet(add0x(privateKey))
     }
@@ -30,10 +30,10 @@ export class PrivateKeyProviderConnector
         )
     }
 
-    // ethCall(contractAddress: string, callData: string): Promise<string> {
-    //     return this.web3Provider.eth.call({
-    //         to: contractAddress,
-    //         data: callData
-    //     })
-    // }
+    ethCall(contractAddress: string, callData: string): Promise<string> {
+        return this.web3Provider.eth.call({
+            to: contractAddress,
+            data: callData
+        })
+    }
 }
