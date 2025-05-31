@@ -146,7 +146,37 @@ const Dashboard: NextPage = () => {
       setIsLoading(false);
     }
   };
+    setIsExecutingTx(true);
+    try {
+      // Example transaction - in real implementation you'd need to decide which chains to use
+      // Here we're just using the first two selected chains
+      const sourceChain = selectedChains[0];
+      const destChain = selectedChains[1];
 
+      console.log(`Preparing transaction from ${sourceChain.name} to ${destChain.name}`);
+
+      const params = {
+        srcChainId: sourceChain.chainId as unknown as SupportedChain,
+        dstChainId: destChain.chainId as unknown as SupportedChain,
+        srcTokenAddress: TOKEN_ADDRESS,
+        dstTokenAddress: TOKEN_ADDRESS,
+        amount: "10000000000000000", // 0.01 ETH in wei as string to avoid BigInt literals
+        enableEstimate: true,
+        walletAddress: accountAddress
+      };
+
+      console.log("Transaction params:", params);
+      
+      // This would trigger the actual transaction
+      const result = await getQuoteAndExecuteOrder(params);
+      console.log("Transaction result:", result);
+      
+    } catch (error) {
+      console.error("Transaction error:", error);
+    } finally {
+      setIsExecutingTx(false);
+    }
+  };
 
 
   const handleAssetSelect = (asset: RankedAssetSummary) => {

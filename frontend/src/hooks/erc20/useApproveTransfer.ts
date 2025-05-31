@@ -64,19 +64,24 @@ import erc20Abi from '@/abi/erc20';
 import { SPENDER, TOKEN_ADDRESS } from '../1inch/useOrder';
 import { useWriteContract } from 'wagmi'
 
-export function useApproveTransfer() {
-    const { writeContract } = useWriteContract();
-    
-    const approveTransfer = async (amount: BigInt) => {
+export async function approveTransfer(amount: BigInt) {
+    const {writeContract} = useWriteContract();
+    try {
         const result = await writeContract({
-            address: TOKEN_ADDRESS,
-            abi: erc20Abi,
-            functionName: 'approve',
-            args: [SPENDER, amount],
-        });
+        address: TOKEN_ADDRESS,
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [SPENDER, amount],
+        })
 
         return result;
-    };
-
-    return { approveTransfer };
+    } catch (error) {
+        console.error(error);
+        return null;
+    }
 }
+export function useApproveTransfer() {
+    return {
+      approveTransfer
+    };
+  }
