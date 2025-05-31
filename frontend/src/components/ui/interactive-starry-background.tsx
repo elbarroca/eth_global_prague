@@ -37,6 +37,21 @@ interface ExplosionParticle {
   maxLife: number;
 }
 
+// New interface for Planets
+interface Planet {
+  x: number;
+  y: number;
+  size: number;
+  baseColor: string;
+  detailColor?: string;
+  ring?: {
+    color: string;
+    angle: number; // Angle of the rings in radians
+    width: number; // Width of the ring band
+    radiusFactor: number; // How far out the ring is from the planet surface (e.g., 1.5x planet radius)
+  };
+}
+
 interface InteractiveStarryBackgroundProps {
   starCount?: number;
   starColor?: string;
@@ -52,29 +67,49 @@ interface InteractiveStarryBackgroundProps {
   explosionParticleSpeed?: number;
   explosionParticleDuration?: number;
   cryptoLogoPaths?: string[];
+  planetCount?: number; // New prop for number of planets
+  scrollPanSensitivity?: number; // New prop for scroll-based panning
 }
 
+// Constants for planet generation
+const DEFAULT_PLANET_COUNT = 5;
+const PLANET_MIN_SIZE = 2;
+const PLANET_MAX_SIZE = 6;
+const PLANET_COLORS = [
+  { base: '#4A7A8C', detail: '#70A5B9' }, // Bluish
+  { base: '#D9A467', detail: '#F0C89B' }, // Sandy/Yellowish
+  { base: '#A94E4E', detail: '#D47F7F' }, // Reddish
+  { base: '#5E8C6A', detail: '#8EBE9A' }, // Greenish
+  { base: '#8C5A8C', detail: '#B98DC3' }, // Purplish
+  { base: '#B0B0B0', detail: '#E0E0E0' }, // Greyish
+];
+const PLANET_RING_COLORS = ['rgba(200, 200, 180, 0.7)', 'rgba(180, 190, 200, 0.7)'];
+
 const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = ({
-  starCount = 700, // Moderate star count for constellation-like clusters
-  starColor = 'rgba(255, 255, 255, 0.7)', // More visible stars
-  starSizeMultiplier = 1.5, // Stars 0.3px to 1.8px
-  starOpacityBase = 0.5, // Opacity 0.5 to 1.0
-  panSensitivity = 0.2, // Lower values mean less panning for mouse movement
-  panEasing = 0.08, // Controls smoothness of panning
-  virtualSizeMultiplier = 1.5, // Virtual canvas is 1.5x viewport size
-  meteorSpawnInterval = 1500, // Increased spawn rate (was 2500)
-  meteorColor = 'rgba(220, 220, 255, 0.7)', // Slightly blueish white for meteors
-  meteorExplosionDistance = 150, // Distance before meteor explodes
-  explosionParticleCount = 50, // Number of particles per explosion
-  explosionParticleSpeed = 1.5, // Speed of explosion particles
-  explosionParticleDuration = 70, // Frames for particles to last
-  cryptoLogoPaths = ['/logos/btc.png', '/logos/eth.png', '/logos/sol.png'], // Placeholder paths
+  starCount = 700,
+  starColor = 'rgba(255, 255, 255, 0.7)',
+  starSizeMultiplier = 1.5,
+  starOpacityBase = 0.5,
+  panSensitivity = 0.2,
+  panEasing = 0.08,
+  virtualSizeMultiplier = 1.5,
+  meteorSpawnInterval = 1500,
+  meteorColor = 'rgba(220, 220, 255, 0.7)',
+  meteorExplosionDistance = 250,
+  explosionParticleCount = 50,
+  explosionParticleSpeed = 1.5,
+  explosionParticleDuration = 70,
+  cryptoLogoPaths = ['/logos/btc.png', '/logos/eth.png', '/logos/sol.png'],
+  planetCount = DEFAULT_PLANET_COUNT, // Use new constant
+  scrollPanSensitivity = 0.1, // Default value for scroll sensitivity
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const starsRef = useRef<Star[]>([]);
+  const planetsRef = useRef<Planet[]>([]); // Ref for planets
   const meteorsRef = useRef<Meteor[]>([]);
   const loadedCryptoImagesRef = useRef<HTMLImageElement[]>([]);
   const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const scrollOffsetYRef = useRef<number>(0); // Ref to store scroll Y offset
   const currentPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const targetPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const animationFrameIdRef = useRef<number | null>(null);
@@ -94,27 +129,48 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
     const initializeStarsAndCanvas = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
-      mousePositionRef.current = { x: canvas.width / 2, y: canvas.height / 2 }; // Initialize mouse at center
+      mousePositionRef.current = { x: canvas.width / 2, y: canvas.height / 2 };
 
       virtualWidth = canvas.width * virtualSizeMultiplier;
       virtualHeight = canvas.height * virtualSizeMultiplier;
 
-      // Calculate panning limits: how far can we pan from the center (0,0) of the virtual canvas
-      // The view is centered on (0,0) of the pan coordinates. Max pan moves this center to the edge of pannable area.
       panLimitX = (virtualWidth - canvas.width) / 2;
       panLimitY = (virtualHeight - canvas.height) / 2;
 
       starsRef.current = [];
       for (let i = 0; i < starCount; i++) {
         starsRef.current.push({
-          // Spread stars across the virtual canvas, centered around (0,0)
           x: (Math.random() - 0.5) * virtualWidth,
           y: (Math.random() - 0.5) * virtualHeight,
           size: Math.random() * starSizeMultiplier + 0.3,
           opacity: Math.random() * (1 - starOpacityBase) + starOpacityBase,
         });
       }
-      meteorsRef.current = []; // Clear meteors on resize
+
+      planetsRef.current = [];
+      for (let i = 0; i < planetCount; i++) {
+        const colorSet = PLANET_COLORS[i % PLANET_COLORS.length];
+        const size = Math.random() * (PLANET_MAX_SIZE - PLANET_MIN_SIZE) + PLANET_MIN_SIZE;
+        let ring = undefined;
+        if (Math.random() < 0.25) { // Reduced chance of rings slightly as planets are smaller
+          ring = {
+            color: PLANET_RING_COLORS[i % PLANET_RING_COLORS.length],
+            angle: Math.random() * Math.PI * 0.3 - Math.PI * 0.15, 
+            width: size * (Math.random() * 0.25 + 0.15), // Adjusted ring width for smaller planets
+            radiusFactor: Math.random() * 0.4 + 1.25, // Adjusted ring radius for smaller planets
+          };
+        }
+        planetsRef.current.push({
+          x: (Math.random() - 0.5) * virtualWidth * 0.98, // Spread them out more, closer to virtual edges
+          y: (Math.random() - 0.5) * virtualHeight * 0.98, // Spread them out more
+          size: size,
+          baseColor: colorSet.base,
+          detailColor: colorSet.detail,
+          ring: ring,
+        });
+      }
+
+      meteorsRef.current = [];
     };
 
     const preloadImages = () => {
@@ -122,52 +178,61 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
       cryptoLogoPaths.forEach(path => {
         const img = new Image();
         img.src = path;
-        // img.onload = () => { /* Optional: handle loaded event */ };
-        // img.onerror = () => { console.error(`Failed to load image: ${path}`); };
+        img.onload = () => { /* console.log(`Crypto logo loaded: ${path}`); */ };
+        img.onerror = () => { console.error(`Failed to load crypto logo: ${path}`); };
         loadedCryptoImagesRef.current.push(img);
       });
     };
 
     const spawnMeteor = () => {
-      const edge = Math.floor(Math.random() * 4); // 0: top, 1: right, 2: bottom, 3: left
       let x, y, vx, vy;
-      const speed = Math.random() * 2 + 1; // Slower speed (was Math.random() * 3 + 2)
-      const angleDeviation = (Math.random() - 0.5) * (Math.PI / 4); // Deviate up to 45 degrees from direct across
+      const speed = Math.random() * 2 + 1;
+      const spawnType = Math.random(); // Determine spawn type: edge or fully random
 
-      switch (edge) {
-        case 0: // Top edge
-          x = Math.random() * canvas.width;
-          y = -20; // Start off-screen
-          vx = Math.sin(Math.PI / 2 + angleDeviation) * speed;
-          vy = Math.cos(Math.PI / 2 + angleDeviation) * speed;
-          break;
-        case 1: // Right edge
-          x = canvas.width + 20;
-          y = Math.random() * canvas.height;
-          vx = -Math.cos(angleDeviation) * speed;
-          vy = Math.sin(angleDeviation) * speed;
-          break;
-        case 2: // Bottom edge
-          x = Math.random() * canvas.width;
-          y = canvas.height + 20;
-          vx = Math.sin(-Math.PI / 2 + angleDeviation) * speed;
-          vy = -Math.cos(-Math.PI / 2 + angleDeviation) * speed;
-          break;
-        default: // Left edge (case 3)
-          x = -20;
-          y = Math.random() * canvas.height;
-          vx = Math.cos(angleDeviation) * speed;
-          vy = Math.sin(angleDeviation) * speed;
-          break;
+      if (spawnType < 0.3) { // 30% chance to spawn from edge
+        const edge = Math.floor(Math.random() * 4);
+        const angleDeviation = (Math.random() - 0.5) * (Math.PI / 4);
+        switch (edge) {
+          case 0: 
+            x = Math.random() * canvas.width;
+            y = -20;
+            vx = Math.sin(Math.PI / 2 + angleDeviation) * speed;
+            vy = Math.cos(Math.PI / 2 + angleDeviation) * speed;
+            break;
+          case 1: 
+            x = canvas.width + 20;
+            y = Math.random() * canvas.height;
+            vx = -Math.cos(angleDeviation) * speed;
+            vy = Math.sin(angleDeviation) * speed;
+            break;
+          case 2: 
+            x = Math.random() * canvas.width;
+            y = canvas.height + 20;
+            vx = Math.sin(-Math.PI / 2 + angleDeviation) * speed;
+            vy = -Math.cos(-Math.PI / 2 + angleDeviation) * speed;
+            break;
+          default: 
+            x = -20;
+            y = Math.random() * canvas.height;
+            vx = Math.cos(angleDeviation) * speed;
+            vy = Math.sin(angleDeviation) * speed;
+            break;
+        }
+      } else { // 70% chance to spawn randomly on screen with random direction
+        x = Math.random() * canvas.width;
+        y = Math.random() * canvas.height;
+        const randomAngle = Math.random() * Math.PI * 2;
+        vx = Math.cos(randomAngle) * speed;
+        vy = Math.sin(randomAngle) * speed;
       }
 
       meteorsRef.current.push({
         x, y, vx, vy,
-        length: Math.random() * 100 + 50, // Length of meteor tail
+        length: Math.random() * 100 + 100,
         opacity: 0,
-        maxOpacity: Math.random() * 0.5 + 0.3, // Max opacity between 0.3 and 0.8
+        maxOpacity: Math.random() * 0.3 + 0.7,
         life: 0,
-        maxLife: 100 + Math.random() * 100, // Fade in/out over 100-200 frames
+        maxLife: 100 + Math.random() * 100,
         traveledDistance: 0,
         exploded: false,
         explosionParticles: [],
@@ -176,43 +241,118 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
       });
     };
 
+    const triggerExplosion = (meteorInstance: Meteor) => {
+      meteorInstance.exploded = true;
+      if (loadedCryptoImagesRef.current.length > 0) {
+          const selectedImage = loadedCryptoImagesRef.current[Math.floor(Math.random() * loadedCryptoImagesRef.current.length)];
+          if (selectedImage && selectedImage.complete && selectedImage.naturalHeight !== 0 && selectedImage.naturalWidth !== 0) {
+              meteorInstance.explosionImage = selectedImage;
+              const baseSize = Math.random() * 30 + 20;
+              const aspectRatio = meteorInstance.explosionImage.naturalWidth / meteorInstance.explosionImage.naturalHeight;
+              meteorInstance.explosionImageSize = {
+                  width: baseSize * (aspectRatio >= 1 ? 1 : aspectRatio),
+                  height: baseSize * (aspectRatio < 1 ? 1 : (1 / aspectRatio)),
+              };
+          } else {
+            meteorInstance.explosionImage = null;
+            meteorInstance.explosionImageSize = { width: 20, height: 20 };
+          }
+      } else {
+        meteorInstance.explosionImage = null;
+        meteorInstance.explosionImageSize = null;
+      }
+
+      for (let i = 0; i < explosionParticleCount; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = Math.random() * explosionParticleSpeed + 0.5;
+          meteorInstance.explosionParticles.push({
+              x: meteorInstance.x,
+              y: meteorInstance.y,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              size: Math.random() * 2 + 1,
+              opacity: 1,
+              life: 0,
+              maxLife: explosionParticleDuration,
+          });
+      }
+      meteorInstance.opacity = 0;
+    };
+
     const handleMouseMove = (event: MouseEvent) => {
       mousePositionRef.current = { x: event.clientX, y: event.clientY };
     };
 
+    const handleScroll = () => {
+      scrollOffsetYRef.current = window.scrollY;
+    };
+
     const animate = () => {
       const now = Date.now();
-      if (now - lastMeteorSpawnTimeRef.current > meteorSpawnInterval * (0.5 + Math.random())) { // Add some randomness
+      if (now - lastMeteorSpawnTimeRef.current > meteorSpawnInterval * (0.5 + Math.random())) {
         spawnMeteor();
         lastMeteorSpawnTimeRef.current = now;
       }
 
-      // Calculate target pan based on mouse position relative to screen center
       const dx = mousePositionRef.current.x - canvas.width / 2;
       const dy = mousePositionRef.current.y - canvas.height / 2;
 
-      // Target pan is inverted: mouse right -> view right (starfield moves left)
       targetPanRef.current.x = Math.max(-panLimitX, Math.min(panLimitX, -dx * panSensitivity));
-      targetPanRef.current.y = Math.max(-panLimitY, Math.min(panLimitY, -dy * panSensitivity));
       
-      // Ease current pan towards target pan
+      // Combine mouse and scroll panning for Y axis
+      const mouseDrivenOffsetY = -dy * panSensitivity;
+      const scrollDrivenOffsetY = -scrollOffsetYRef.current * scrollPanSensitivity;
+      const combinedOffsetY = mouseDrivenOffsetY + scrollDrivenOffsetY;
+      targetPanRef.current.y = Math.max(-panLimitY, Math.min(panLimitY, combinedOffsetY));
+      
       currentPanRef.current.x += (targetPanRef.current.x - currentPanRef.current.x) * panEasing;
       currentPanRef.current.y += (targetPanRef.current.y - currentPanRef.current.y) * panEasing;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
       ctx.save();
-      // Translate to the center of the screen, then apply pan, then draw stars relative to virtual center (0,0)
       ctx.translate(canvas.width / 2 + currentPanRef.current.x, canvas.height / 2 + currentPanRef.current.y);
 
+      // Draw Stars
       starsRef.current.forEach(star => {
         ctx.beginPath();
         ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-        ctx.fillStyle = starColor.replace(/,\s*([\d.]+)\)/, `, ${star.opacity})`); // Adjust opacity of starColor
+        ctx.fillStyle = starColor.replace(/,\s*([\d.]+)\)/, `, ${star.opacity})`);
         ctx.fill();
       });
 
-      // Draw meteors (not affected by pan, drawn directly on viewport)
-      ctx.save();
+      // Draw Planets
+      planetsRef.current.forEach(planet => {
+        ctx.beginPath();
+        if (planet.detailColor) {
+          const gradient = ctx.createRadialGradient(planet.x, planet.y, planet.size * 0.2, planet.x, planet.y, planet.size);
+          gradient.addColorStop(0, planet.detailColor);
+          gradient.addColorStop(1, planet.baseColor);
+          ctx.fillStyle = gradient;
+        } else {
+          ctx.fillStyle = planet.baseColor;
+        }
+        ctx.arc(planet.x, planet.y, planet.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (planet.ring) {
+          ctx.beginPath();
+          ctx.strokeStyle = planet.ring.color;
+          ctx.lineWidth = planet.ring.width;
+          // Drawing rings as an ellipse (scaled circle)
+          ctx.save();
+          ctx.translate(planet.x, planet.y);
+          ctx.rotate(planet.ring.angle);
+          ctx.scale(1, 0.3); // Scale Y to make it look like a ring seen from an angle
+          ctx.arc(0, 0, planet.size * planet.ring.radiusFactor, 0, Math.PI * 2);
+          ctx.restore();
+          ctx.stroke();
+        }
+      });
+
+      ctx.restore(); // Restore from star/planet panning context
+
+      // Meteors are drawn in a separate context (not panned with stars/planets)
       meteorsRef.current = meteorsRef.current.filter(meteor => {
         if (!meteor.exploded) {
           meteor.x += meteor.vx;
@@ -220,7 +360,6 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
           meteor.traveledDistance += Math.sqrt(meteor.vx**2 + meteor.vy**2);
           meteor.life++;
 
-          // Fade in and out logic for meteor itself
           if (meteor.life < meteor.maxLife / 2) {
             meteor.opacity = (meteor.life / (meteor.maxLife / 2)) * meteor.maxOpacity;
           } else {
@@ -228,43 +367,35 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
           }
 
           if (meteor.opacity <= 0 || meteor.life >= meteor.maxLife) {
-             // If meteor fades out before exploding, mark for removal without explosion
             if (meteor.explosionParticles.length === 0) return false;
           }
 
+          if (!meteor.exploded && meteor.traveledDistance > meteorExplosionDistance) {
+            triggerExplosion(meteor);
+          }
 
-          // Check for explosion
-          if (meteor.traveledDistance > meteorExplosionDistance && !meteor.exploded) {
-            meteor.exploded = true;
-            if (loadedCryptoImagesRef.current.length > 0) {
-              meteor.explosionImage = loadedCryptoImagesRef.current[Math.floor(Math.random() * loadedCryptoImagesRef.current.length)];
-              const baseSize = Math.random() * 30 + 20; // Random base size between 20 and 50
-              const aspectRatio = meteor.explosionImage.naturalWidth / meteor.explosionImage.naturalHeight;
-              meteor.explosionImageSize = {
-                width: baseSize * (aspectRatio > 1 ? 1 : aspectRatio),
-                height: baseSize * (aspectRatio < 1 ? 1 : 1 / aspectRatio),
-              };
-            }
+          if (!meteor.exploded) {
+            const centerX = canvas.width / 2;
+            const horizontalCenterBand = canvas.width / 3;
+            const minX = centerX - horizontalCenterBand / 2;
+            const maxX = centerX + horizontalCenterBand / 2;
+            
+            const verticalTolerance = canvas.height / 4;
+            const minY = canvas.height / 2 - verticalTolerance;
+            const maxY = canvas.height / 2 + verticalTolerance;
 
-            for (let i = 0; i < explosionParticleCount; i++) {
-              const angle = Math.random() * Math.PI * 2;
-              const speed = Math.random() * explosionParticleSpeed + 0.5;
-              meteor.explosionParticles.push({
-                x: meteor.x,
-                y: meteor.y,
-                vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed,
-                size: Math.random() * 2 + 1,
-                opacity: 1,
-                life: 0,
-                maxLife: explosionParticleDuration,
-              });
+            const minTravelForCentral = meteorExplosionDistance * 0.4;
+
+            if (meteor.x > minX && meteor.x < maxX && 
+                meteor.y > minY && meteor.y < maxY && 
+                meteor.traveledDistance > minTravelForCentral) {
+                if (Math.random() < 0.6) { 
+                     triggerExplosion(meteor);
+                }
             }
-            meteor.opacity = 0; // Hide meteor tail immediately on explosion
           }
         }
 
-        // Handle explosion particles
         if (meteor.exploded) {
           meteor.explosionParticles.forEach(p => {
             p.x += p.vx;
@@ -275,7 +406,6 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
 
           meteor.explosionParticles = meteor.explosionParticles.filter(p => p.opacity > 0 && p.life < p.maxLife);
 
-          // Draw particles
           meteor.explosionParticles.forEach(p => {
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
@@ -285,13 +415,11 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
             ctx.fill();
           });
           
-          // Draw crypto symbol (now image)
           if (meteor.explosionImage && meteor.explosionImageSize && meteor.explosionParticles.length > 0) {
-            const firstParticle = meteor.explosionParticles[0];
-            if (firstParticle && meteor.explosionImage.complete && meteor.explosionImage.naturalHeight !== 0) { // Check image loaded
-                const imageOpacity = firstParticle.opacity * 0.9; // Slightly more visible than text
+            if (meteor.explosionImage.complete && meteor.explosionImage.naturalHeight !== 0) { 
+                const imageOpacity = meteor.explosionParticles[0] ? meteor.explosionParticles[0].opacity * 0.9 : 0.9;
                 ctx.save();
-                ctx.globalAlpha = imageOpacity;
+                ctx.globalAlpha = imageOpacity > 0 ? imageOpacity : 0;
                 const imgWidth = meteor.explosionImageSize.width;
                 const imgHeight = meteor.explosionImageSize.height;
                 ctx.drawImage(meteor.explosionImage, meteor.x - imgWidth / 2, meteor.y - imgHeight / 2, imgWidth, imgHeight);
@@ -299,11 +427,9 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
             }
           }
           
-          // If exploded and all particles are gone, remove the meteor
           if (meteor.explosionParticles.length === 0) return false;
         }
 
-        // Draw meteor tail if not exploded
         if (!meteor.exploded && meteor.opacity > 0) {
           ctx.beginPath();
           ctx.moveTo(meteor.x, meteor.y);
@@ -315,37 +441,39 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
           gradient.addColorStop(0, `${baseColorString},${meteor.opacity})`);
           gradient.addColorStop(1, `${baseColorString},0)`);
           ctx.strokeStyle = gradient;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.5;
           ctx.stroke();
         }
         
-        // Keep meteor if it's not exploded yet or if it has active particles
         return true;
       });
-      ctx.restore(); // Restore from meteor specific drawing context
 
-      ctx.restore(); // Restore from pan and star drawing context
       animationFrameIdRef.current = requestAnimationFrame(animate);
     };
 
     initializeStarsAndCanvas();
-    preloadImages(); // Preload images
+    preloadImages();
     window.addEventListener('resize', () => {
         initializeStarsAndCanvas();
-        preloadImages(); // Re-evaluate on resize if paths could change, though unlikely here
+        preloadImages();
     });
     window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('scroll', handleScroll);
     
+    // Initialize scroll position once
+    handleScroll();
+
     animate();
 
     return () => {
       window.removeEventListener('resize', initializeStarsAndCanvas);
       window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('scroll', handleScroll);
       if (animationFrameIdRef.current) {
         cancelAnimationFrame(animationFrameIdRef.current);
       }
     };
-  }, [starCount, starColor, starSizeMultiplier, starOpacityBase, panSensitivity, panEasing, virtualSizeMultiplier, meteorSpawnInterval, meteorColor, meteorExplosionDistance, explosionParticleCount, explosionParticleSpeed, explosionParticleDuration, cryptoLogoPaths]);
+  }, [starCount, starColor, starSizeMultiplier, starOpacityBase, panSensitivity, panEasing, virtualSizeMultiplier, meteorSpawnInterval, meteorColor, meteorExplosionDistance, explosionParticleCount, explosionParticleSpeed, explosionParticleDuration, cryptoLogoPaths, planetCount, scrollPanSensitivity]);
 
   return (
     <canvas
@@ -355,7 +483,7 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
         top: 0,
         left: 0,
         zIndex: -1,
-        background: 'radial-gradient(ellipse at bottom, #0d1a26 0%, #040608 100%)', // Keep a dark base
+        background: 'radial-gradient(ellipse at bottom, #0d1a26 0%, #040608 100%)',
       }}
     />
   );

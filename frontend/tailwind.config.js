@@ -12,7 +12,7 @@ module.exports = {
   theme: {
   	extend: {
   		fontFamily: {
-  			sans: ['Nunito', ...fontFamily.sans],
+  			sans: ['Comic Neue', ...fontFamily.sans],
   		},
   		colors: {
   			border: 'hsl(var(--border))',

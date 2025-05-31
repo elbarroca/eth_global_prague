@@ -27,7 +27,10 @@ const Home: NextPage = () => {
               Web3App
             </div>
             <Link href="/dashboard">
-              <Button variant="outline" className="border-green-500 text-green-400 hover:bg-green-500 hover:text-black transition-colors duration-300">
+              <Button 
+                variant="outline" 
+                className="border-green-500 text-green-400 hover:bg-green-500 hover:text-black transition-colors duration-300"
+              >
                 Go to Dashboard
               </Button>
             </Link>
