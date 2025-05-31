@@ -27,7 +27,14 @@ def _neg_sharpe_ratio(weights: np.ndarray, expected_returns: pd.Series, cov_matr
 def _portfolio_volatility(weights: np.ndarray, expected_returns: pd.Series, cov_matrix: pd.DataFrame, risk_free_rate: float = None) -> float:
     """Calculates portfolio volatility (to be minimized for min_volatility objective)."""
     # expected_returns and risk_free_rate are not used here but kept for consistent signature with _neg_sharpe_ratio
-    return _calculate_portfolio_performance(weights, expected_returns, cov_matrix)[1]
+    _, p_volatility = _calculate_portfolio_performance(weights, expected_returns, cov_matrix)
+    return p_volatility
+
+def _portfolio_return(weights: np.ndarray, expected_returns: pd.Series, cov_matrix: pd.DataFrame, risk_free_rate: float = None) -> float:
+    """Calculates negative portfolio return (to be minimized for maximize_return objective)."""
+    # cov_matrix and risk_free_rate are not used here but kept for consistent signature
+    p_return, _ = _calculate_portfolio_performance(weights, expected_returns, cov_matrix)
+    return -p_return # We minimize the negative return
 
 def calculate_mvo_inputs(
     ohlcv_data: Dict[str, pd.DataFrame], # Assuming this was the original first arg
@@ -73,7 +80,7 @@ def optimize_portfolio_mvo(
     covariance_matrix: pd.DataFrame,
     risk_free_rate: float = 0.02,
     target_return: Optional[float] = None, # For efficient frontier point
-    objective: str = "maximize_sharpe" # or "minimize_volatility"
+    objective: str = "maximize_sharpe" # or "minimize_volatility" or "maximize_return"
 ) -> Optional[Dict[str, Any]]:
     """
     Performs Mean-Variance Optimization.
@@ -106,29 +113,71 @@ def optimize_portfolio_mvo(
     elif objective == "minimize_volatility":
         opt_func = _portfolio_volatility
         if target_return is not None: # Constraint for specific return if minimizing volatility
+            logger.info(f"Applying target return constraint for minimize_volatility: {target_return}")
             constraints = (
                 constraints, # Keep sum of weights = 1
                 {'type': 'eq', 'fun': lambda weights: _calculate_portfolio_performance(weights, expected_returns, covariance_matrix)[0] - target_return}
             )
+        else:
+            logger.info("No target return specified for minimize_volatility. Minimizing global volatility.")
+    elif objective == "maximize_return":
+        # For maximizing return with long-only, sum-to-one weights, it's putting 100% on the highest expected return asset.
+        # However, to fit into the optimizer framework or allow for diversification if other constraints were present,
+        # we can use the optimizer. Or, more simply, just pick the best one.
+        # Using optimizer for consistency and if other constraints might be added later.
+        opt_func = _portfolio_return
+        # If a target_return is specified with maximize_return, it could imply a floor,
+        # but standard MVO maximize_return doesn't typically use it this way.
+        # For now, we'll ignore target_return for maximize_return as it aims for the highest possible.
+        if target_return is not None:
+            logger.warning("target_return is specified with 'maximize_return' objective, but it will be ignored as the objective is to maximize return without such a target constraint in this setup.")
+            # Potentially, one could add a constraint like: {'type': 'ineq', 'fun': lambda w: _calculate_portfolio_performance(w, ER, C)[0] - target_return}
+            # This would mean "return must be AT LEAST target_return". But this makes it a different problem.
+            # For pure "maximize_return", no such constraint.
     else:
         logger.error(f"Unsupported MVO objective: {objective}")
         return None
 
     try:
-        result = minimize(opt_func, initial_weights, args=args, method='SLSQP',
-                          bounds=bounds, constraints=constraints, options=optimizer_options)
+        # Special handling for maximize_return to simplify and guarantee 100% on highest return asset
+        # if no other complex constraints are in play.
+        if objective == "maximize_return" and not (isinstance(constraints, tuple) and len(constraints) > 1): # only basic sum-to-1 constraint
+            best_asset_idx = np.argmax(expected_returns.values)
+            optimal_weights = np.zeros(num_assets)
+            optimal_weights[best_asset_idx] = 1.0
+            result_success = True
+            result_message = "Directly assigned 100% to highest expected return asset."
+            logger.info(result_message)
+        else:
+            optimization_result = minimize(opt_func, initial_weights, args=args, method='SLSQP',
+                                bounds=bounds, constraints=constraints, options=optimizer_options)
+            result_success = optimization_result.success
+            optimal_weights = optimization_result.x if result_success else initial_weights
+            result_message = optimization_result.message if not result_success else "Optimization successful."
+
     except Exception as e:
         logger.error(f"MVO optimization failed: {e}")
         return None
 
-    if not result.success:
-        logger.warning(f"MVO optimization did not succeed: {result.message}")
-        return None
+    if not result_success:
+        logger.warning(f"MVO optimization did not succeed: {result_message}")
+        # Fallback for maximize_return if optimizer fails for some reason
+        if objective == "maximize_return":
+            logger.warning("Optimizer failed for 'maximize_return', falling back to assigning 100% to highest expected return asset.")
+            best_asset_idx = np.argmax(expected_returns.values)
+            optimal_weights = np.zeros(num_assets)
+            optimal_weights[best_asset_idx] = 1.0
+        else: # For other objectives, if optimizer fails, returning None or initial_weights might be options
+             return None
 
-    optimal_weights = result.x
-    # Normalize weights to ensure they sum to exactly 1.0
-    optimal_weights /= np.sum(optimal_weights)
-    
+    # Normalize weights to ensure they sum to exactly 1.0 and handle precision issues
+    if np.sum(optimal_weights) > 1e-6 : # Avoid division by zero if all weights are zero
+        optimal_weights = optimal_weights / np.sum(optimal_weights)
+    else: # If all weights are somehow zero (e.g. optimizer failure and bad initial guess)
+        logger.warning("All optimal weights are zero or near zero. Optimizer likely failed to find a solution. Returning None.")
+        return None # Or handle by assigning equal weights, or 100% to highest return asset as a last resort.
+                    # For now, returning None to indicate failure more clearly.
+
     # Create weights series
     weights_series = pd.Series(optimal_weights, index=assets)
     

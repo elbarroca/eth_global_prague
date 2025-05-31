@@ -1,11 +1,9 @@
 # backend/forecast/main_pipeline.py
 import pandas as pd
-import numpy as np
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 import sys
 import os
-import asyncio # Added asyncio
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

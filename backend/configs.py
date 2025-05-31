@@ -1,5 +1,6 @@
 # app/core/config.py
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv() # Load variables from .env file
@@ -61,3 +62,6 @@ WETH_ETHEREUM_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 PERIOD_HOURLY_SECONDS = 3600
 PERIOD_4HOURLY_SECONDS = 14400
 PERIOD_DAILY_SECONDS = 86400
+
+BLOCKSCOUT_SEPOLIA_API_BASE_URL: str = "https://eth-sepolia.blockscout.com/api"
+BLOCKSCOUT_ROOTSTOCK_TESTNET_API_BASE_URL: Optional[str] = None # Example

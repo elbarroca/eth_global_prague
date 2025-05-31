@@ -85,3 +85,15 @@ class StoredPortfolioData(BaseModel):
     selected_assets: List[str]  # List of asset symbols used
     total_assets_screened: int
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SingleChainPortfolioOptimizationResult(BaseModel):
+    chain_id: int
+    chain_name: str
+    status: str # e.g., "success", "error", "no_assets_found"
+    data: Optional[Dict[str, Any]] = None # Contains the successful pipeline result
+    error_message: Optional[str] = None
+    request_params_for_chain: Dict[str, Any]
+
+class CrossChainPortfolioResponse(BaseModel):
+    results_by_chain: Dict[str, SingleChainPortfolioOptimizationResult] # Chain ID as string key
+    overall_request_summary: Dict[str, Any]
