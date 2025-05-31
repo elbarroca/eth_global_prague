@@ -21,7 +21,7 @@ import {
 import { TrendingUp, TrendingDown, DollarSign, Coins } from 'lucide-react'
 import React from 'react'
 import EthereumIcon from '@/components/icons/EthereumIcon'
-import { LiquidatePortfolioButton } from '../optimizer/LiquidatePorfolioButton'
+import { LiquidatePortfolioButton } from '../optimizer/LiquidatePortfolioButton'
 
 // Mock data for charts
 const performanceData = [

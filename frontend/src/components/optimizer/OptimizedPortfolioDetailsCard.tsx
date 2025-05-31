@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { OptimizedPortfolioDetails, RankedAssetSummary } from '@/types/portfolio-api';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
-import { LiquidatePortfolioButton } from './LiquidatePorfolioButton';
+import { LiquidatePortfolioButton } from './LiquidatePortfolioButton';
 
 interface OptimizedPortfolioDetailsCardProps {
   details: OptimizedPortfolioDetails & { asset_details_map?: { [asset_ticker: string]: RankedAssetSummary } }; // Use RankedAssetSummary

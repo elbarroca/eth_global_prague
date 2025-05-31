@@ -18,7 +18,7 @@ import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedP
 import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
 import { AssetDeepDiveCard } from '@/components/optimizer/AssetDeepDiveCard';
 import EfficientFrontierPlot from '@/components/optimizer/EfficientFrontierPlot';
-import { LiquidatePortfolioButton } from '@/components/optimizer/LiquidatePorfolioButton';
+import { LiquidatePortfolioButton } from '@/components/optimizer/LiquidatePortfolioButton';
 
 import {
   PortfolioApiResponse,
