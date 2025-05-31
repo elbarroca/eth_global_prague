@@ -18,6 +18,7 @@ import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedP
 import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
 import { AssetDeepDiveCard } from '@/components/optimizer/AssetDeepDiveCard';
 import EfficientFrontierPlot from '@/components/optimizer/EfficientFrontierPlot';
+import { LiquidatePortfolioButton } from '@/components/optimizer/LiquidatePorfolioButton';
 
 import {
   PortfolioApiResponse,
@@ -28,11 +29,7 @@ import {
   chainOptions,
 } from '@/types/portfolio-api';
 
-import { useOrder } from '@/hooks/1inch/useOrder';
-import { TOKEN_ADDRESS, SPENDER } from '@/hooks/1inch/useOrder';
-import { SupportedChain } from '@1inch/cross-chain-sdk';
 
-const { getQuoteAndExecuteOrder } = useOrder();
 
 // Define Zod schema for form validation (can be co-located or imported)
 const portfolioFormSchema = z.object({
@@ -63,7 +60,6 @@ const Dashboard: NextPage = () => {
   
   // New state for tracking selected chains with full details
   const [selectedChains, setSelectedChains] = useState<SelectedChainDetails[]>([]);
-  const [isExecutingTx, setIsExecutingTx] = useState(false);
 
   const formMethods = useForm<PortfolioFormInputs, any, PortfolioFormInputs>({
     resolver: zodResolver(portfolioFormSchema),
@@ -151,44 +147,7 @@ const Dashboard: NextPage = () => {
     }
   };
 
-  // New function to execute cross-chain transaction
-  const executeTransaction = async () => {
-    if (!accountAddress || selectedChains.length < 2) {
-      console.error("Missing wallet address or need at least 2 chains for cross-chain transaction");
-      return;
-    }
 
-    setIsExecutingTx(true);
-    try {
-      // Example transaction - in real implementation you'd need to decide which chains to use
-      // Here we're just using the first two selected chains
-      const sourceChain = selectedChains[0];
-      const destChain = selectedChains[1];
-
-      console.log(`Preparing transaction from ${sourceChain.name} to ${destChain.name}`);
-
-      const params = {
-        srcChainId: sourceChain.chainId as unknown as SupportedChain,
-        dstChainId: destChain.chainId as unknown as SupportedChain,
-        srcTokenAddress: TOKEN_ADDRESS,
-        dstTokenAddress: TOKEN_ADDRESS,
-        amount: "10000000000000000", // 0.01 ETH in wei
-        enableEstimate: true,
-        walletAddress: accountAddress
-      };
-
-      console.log("Transaction params:", params);
-      
-      // This would trigger the actual transaction
-      const result = await getQuoteAndExecuteOrder(params);
-      console.log("Transaction result:", result);
-      
-    } catch (error) {
-      console.error("Transaction error:", error);
-    } finally {
-      setIsExecutingTx(false);
-    }
-  };
 
   const handleAssetSelect = (asset: RankedAssetSummary) => {
     setSelectedAssetForDeepDive(asset);
@@ -225,7 +184,6 @@ const Dashboard: NextPage = () => {
 
   // Add a key to result components to force re-mount and re-animate on new data
   const resultsKey = portfolioData ? JSON.stringify(portfolioData.overall_request_summary.requested_chain_ids) + portfolioData.overall_request_summary.timeframe : 'no_results';
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 text-gray-100">
       <Head>
@@ -320,29 +278,6 @@ const Dashboard: NextPage = () => {
                       <ArrowLeft className="h-4 w-4 mr-1.5" />
                       Back to Optimizer Form
                     </Button>
-                    
-                    {selectedChains.length >= 2 && (
-                      <Button
-                        onClick={executeTransaction}
-                        disabled={isExecutingTx}
-                        className="mb-6 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white font-semibold rounded-xl px-6 py-3 shadow-lg hover:shadow-xl transition-all duration-300"
-                      >
-                        {isExecutingTx ? (
-                          <>
-                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Processing...
-                          </>
-                        ) : (
-                          <>
-                            <ArrowRightLeft className="h-5 w-5 mr-2" />
-                            Execute Cross-Chain Transaction
-                          </>
-                        )}
-                      </Button>
-                    )}
                   </div>
 
                   {/* Debugging - Show Selected Chains (can be removed in production) */}
@@ -434,6 +369,11 @@ const Dashboard: NextPage = () => {
                               alternativePortfolios={globalPortfolioData.data.alternative_optimized_portfolios}
                             />
                           }
+                        />
+                        
+                        <LiquidatePortfolioButton 
+                          portfolioWeights={portfolioDetailsToDisplay.weights}
+                          selectedChains={selectedChains.map(chain => chain.id)}
                         />
                       </>
                     )
