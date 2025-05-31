@@ -16,9 +16,11 @@ export default function TestButton() {
         ARBITRUM: 42161 as SupportedChain
     };
 
+    const amount = "196800000000000" // ≈0.0001968 ETH ≈\$0.50 at \$2,540.66/ETH
+
     const approve = async () => {
         // Use BigInt constructor instead of literal for compatibility
-        const result = await approveTransfer(BigInt("1000000000000000000"));
+        const result = await approveTransfer(BigInt(amount));
         console.log(result);
     }
 
@@ -33,7 +35,7 @@ export default function TestButton() {
             dstChainId: CHAIN_IDS.ARBITRUM,
             srcTokenAddress: TOKEN_ADDRESS,
             dstTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", //usdc on arbitrum
-            amount: "10000000000000000000", // 10 tokens
+            amount: amount, // 10 tokens
             enableEstimate: true, 
             walletAddress: walletAddress 
         });
