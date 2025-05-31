@@ -244,7 +244,7 @@ def test_ta_signals():
     ta_signals = generate_ta_signals(
         asset_symbol="TEST",
         chain_id=1,
-        token_address="0x123",
+        base_token_address="0x123",
         ohlcv_df=ohlcv_df
     )
     
@@ -273,7 +273,7 @@ def test_quant_signals():
     quant_signals = generate_quant_advanced_signals(
         asset_symbol="TEST",
         chain_id=1,
-        token_address="0x123",
+        base_token_address="0x123",
         ohlcv_df=ohlcv_df,
         trading_periods_per_year=252
     )
@@ -299,7 +299,7 @@ def test_50_plus_data_points():
     ta_signals_50 = generate_ta_signals(
         asset_symbol="TEST_50",
         chain_id=1,
-        token_address="0x123",
+        base_token_address="0x123",
         ohlcv_df=ohlcv_df_50
     )
     
@@ -307,7 +307,7 @@ def test_50_plus_data_points():
     quant_signals_50 = generate_quant_advanced_signals(
         asset_symbol="TEST_50",
         chain_id=1,
-        token_address="0x123",
+        base_token_address="0x123",
         ohlcv_df=ohlcv_df_50,
         trading_periods_per_year=252
     )

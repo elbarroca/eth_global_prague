@@ -32,7 +32,7 @@ def convert_numpy_types(obj):
 def generate_ta_signals(
     asset_symbol: str,
     chain_id: int,
-    token_address: Optional[str],
+    base_token_address: Optional[str],
     ohlcv_df: pd.DataFrame,
     current_price: Optional[float] = None
 ) -> List[Signal]:
@@ -185,13 +185,13 @@ def generate_ta_signals(
         for key, value in details.items():
             if isinstance(value, (int, float)) and not np.isfinite(value):
                 logging.warning(f"Invalid value {value} for detail {key} in signal {signal_type}")
-                continue
+                continue # Skip invalid detail
             validated_details[key] = value
             
         return Signal(
             asset_symbol=asset_symbol,
             chain_id=chain_id, 
-            token_address=token_address,
+            base_token_address=base_token_address,
             signal_type=signal_type,
             confidence=confidence,
             details=convert_numpy_types(validated_details),

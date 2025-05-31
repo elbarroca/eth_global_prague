@@ -624,7 +624,25 @@ async def get_recent_forecast_signals(
     
     all_recent_signals_for_asset = []
     async for doc in signals_cursor:
-        all_recent_signals_for_asset.append(ForecastSignalRecord(**doc))
+        # Handle potential old field name 'token_address'
+        if "token_address" in doc and "base_token_address" not in doc:
+            doc["base_token_address"] = doc.pop("token_address")
+        
+        # Ensure other new optional fields are at least present as None if missing,
+        # though Pydantic's Optional with default None handles this.
+        # This is more for explicit clarity if needed or if defaults weren't set in model.
+        # if "quote_token_address" not in doc:
+        #     doc["quote_token_address"] = None
+        # if "base_token_symbol" not in doc:
+        #     doc["base_token_symbol"] = None
+        # if "quote_token_symbol" not in doc:
+        #     doc["quote_token_symbol"] = None
+
+        try:
+            all_recent_signals_for_asset.append(ForecastSignalRecord(**doc))
+        except Exception as e:
+            logger.error(f"Failed to parse document into ForecastSignalRecord for asset {asset_symbol_global}, doc_id {doc.get('_id')}: {e}. Document: {doc}")
+            continue # Skip this problematic document
     
     if not all_recent_signals_for_asset:
         logger.info(f"No recent forecast signals found in DB for {asset_symbol_global} (chain {chain_id}) within last {max_forecast_age_hours} hours.")

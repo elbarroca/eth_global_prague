@@ -36,6 +36,53 @@ def _portfolio_return(weights: np.ndarray, expected_returns: pd.Series, cov_matr
     p_return, _ = _calculate_portfolio_performance(weights, expected_returns, cov_matrix)
     return -p_return # We minimize the negative return
 
+def _calculate_max_drawdown(portfolio_period_returns: pd.Series) -> float:
+    """
+    Calculates the maximum drawdown from a series of portfolio period returns.
+    Returns drawdown as a positive value (e.g., 0.2 for 20% drawdown).
+    """
+    if portfolio_period_returns.empty:
+        return 0.0
+    cumulative_returns = (1 + portfolio_period_returns).cumprod()
+    peak = cumulative_returns.expanding(min_periods=1).max()
+    drawdown = (cumulative_returns - peak) / peak
+    max_drawdown = abs(drawdown.min()) # Max drawdown is the minimum (most negative) value in the drawdown series
+    return float(max_drawdown) if pd.notna(max_drawdown) else 0.0
+
+def _calculate_sortino_ratio(portfolio_period_returns: pd.Series, annualized_risk_free_rate: float, annualization_factor: int) -> float:
+    """
+    Calculates the Sortino ratio.
+    """
+    if portfolio_period_returns.empty or annualization_factor == 0:
+        return 0.0
+
+    # Annualized portfolio return
+    annualized_portfolio_return = (portfolio_period_returns.mean() * annualization_factor)
+
+    # Per-period risk-free rate
+    period_risk_free_rate = annualized_risk_free_rate / annualization_factor
+    
+    # Target downside returns
+    target_downside_returns = portfolio_period_returns[portfolio_period_returns < period_risk_free_rate]
+    
+    if target_downside_returns.empty: # No returns below the target
+        # If mean return > RFR, Sortino is effectively infinite (or very large positive).
+        # If mean return <= RFR, Sortino is negative or zero.
+        # For simplicity, return a large number if returns are good, or 0 if not.
+        return 100.0 if annualized_portfolio_return > annualized_risk_free_rate else 0.0
+
+
+    # Annualized downside deviation
+    downside_deviation = np.std(target_downside_returns) * np.sqrt(annualization_factor)
+    
+    if downside_deviation == 0:
+         # If no downside deviation and return > RFR, Sortino is effectively infinite.
+        return 100.0 if annualized_portfolio_return > annualized_risk_free_rate else 0.0
+
+    sortino_ratio = (annualized_portfolio_return - annualized_risk_free_rate) / downside_deviation
+    return float(sortino_ratio) if pd.notna(sortino_ratio) else 0.0
+
+
 def calculate_mvo_inputs(
     ohlcv_data: Dict[str, pd.DataFrame], # Assuming this was the original first arg
     ranked_assets_df: Optional[pd.DataFrame] = None, # Add this new argument
@@ -83,6 +130,7 @@ def optimize_portfolio_mvo(
     covariance_matrix: pd.DataFrame,
     historical_period_returns_df: Optional[pd.DataFrame] = None, # Added for CVaR
     risk_free_rate: float = 0.02,
+    annualization_factor: int = 365, # Added for Sortino Ratio
     target_return: Optional[float] = None, # For efficient frontier point
     objective: str = "maximize_sharpe" # or "minimize_volatility" or "maximize_return"
 ) -> Optional[Dict[str, Any]]:
@@ -184,57 +232,98 @@ def optimize_portfolio_mvo(
     min_weight_threshold = 0.001  # 0.1%
     non_zero_weights = weights_series[weights_series >= min_weight_threshold]
     
-    if non_zero_weights.empty:
-        logger.warning("All optimized weights are below threshold. Returning top asset with 100% weight.")
-        # Fallback: give 100% to the asset with highest expected return
-        best_asset = expected_returns.idxmax()
-        non_zero_weights = pd.Series([1.0], index=[best_asset])
-    else:
-        # Renormalize the non-zero weights to sum to 1.0
+    if non_zero_weights.empty and not weights_series.empty: # If all are < threshold but not all zero initially
+        logger.warning(f"All optimized weights are below threshold {min_weight_threshold}. Assigning 100% to asset with highest ER if objective is not minimize_volatility, or highest weight from optimizer otherwise.")
+        if objective != "minimize_volatility" and not expected_returns.empty:
+             best_asset = expected_returns.idxmax()
+             non_zero_weights = pd.Series([1.0], index=[best_asset])
+        elif not weights_series.empty: # Fallback to the one with the largest weight from optimizer
+            best_asset_from_opt = weights_series.idxmax()
+            non_zero_weights = pd.Series([1.0], index=[best_asset_from_opt])
+        else: # Should not happen if initial check passed
+            logger.error("Cannot determine fallback asset as input series are empty.")
+            return None
+            
+    elif non_zero_weights.empty and weights_series.empty: # Should be caught earlier
+        logger.error("Optimizer returned empty weights series and initial weights were also empty.")
+        return None
+
+    # Renormalize the non-zero weights to sum to 1.0
+    if not non_zero_weights.empty:
         non_zero_weights = non_zero_weights / non_zero_weights.sum()
-    
+    else: # Should ideally not happen if fallback logic above is robust
+        logger.warning("Non_zero_weights became empty even after fallback, this indicates an issue.")
+        # As a last resort, if expected_returns is not empty, pick the best one.
+        if not expected_returns.empty:
+            best_asset = expected_returns.idxmax()
+            non_zero_weights = pd.Series([1.0], index=[best_asset])
+        else: # Cannot proceed
+            return None
+
     logger.info(f"Portfolio optimization result: {len(non_zero_weights)} assets with non-zero weights (filtered from {len(assets)} total assets)")
     logger.info(f"Non-zero weights sum: {non_zero_weights.sum():.6f}")
 
     # Calculate performance using the filtered weights
     # Create a full weights array for performance calculation
-    full_weights = pd.Series(0.0, index=assets)
-    full_weights.loc[non_zero_weights.index] = non_zero_weights
+    full_weights = pd.Series(0.0, index=assets) # Use original 'assets' index for full dimensionality
+    full_weights.loc[non_zero_weights.index] = non_zero_weights # Populate with optimized, filtered, renormalized weights
     
     opt_return, opt_volatility = _calculate_portfolio_performance(full_weights.values, expected_returns, covariance_matrix)
     sharpe_ratio = (opt_return - risk_free_rate) / opt_volatility if opt_volatility > 1e-9 else 0
 
-    # Calculate CVaR (e.g., 95% Historical CVaR)
-    cvar_95 = None
+    # Initialize additional metrics
+    max_drawdown_val = 0.0
+    sortino_ratio_val = 0.0
+    calmar_ratio_val = 0.0
+    portfolio_historical_returns = pd.Series(dtype=float)
+
     if historical_period_returns_df is not None and not historical_period_returns_df.empty:
         # Ensure historical returns columns match the assets in full_weights
-        aligned_returns_df = historical_period_returns_df.reindex(columns=full_weights.index).fillna(0.0)
-        if not aligned_returns_df.empty:
-            portfolio_historical_returns = aligned_returns_df.dot(full_weights)
-            if not portfolio_historical_returns.empty:
-                # CVaR is the average of returns in the worst q-th percentile
-                confidence_level = 0.95
-                var_95 = portfolio_historical_returns.quantile(1 - confidence_level) # This is VaR (value at risk)
-                # CVaR is the expected return given that the return is less than or equal to VaR
-                cvar_95_val = portfolio_historical_returns[portfolio_historical_returns <= var_95].mean()
-                if pd.notna(cvar_95_val):
-                    cvar_95 = round(cvar_95_val, 6)
-                    logger.info(f"Calculated CVaR (95%): {cvar_95}")
-                else:
-                    logger.warning("CVaR calculation resulted in NaN, possibly due to insufficient data points beyond VaR.")
-            else:
-                logger.warning("Portfolio historical returns are empty, cannot calculate CVaR.")
+        # Align historical_period_returns_df columns with 'assets' (index of expected_returns and columns of cov_matrix)
+        aligned_returns_df = historical_period_returns_df.reindex(columns=assets).fillna(0.0)
+        
+        if not aligned_returns_df.empty and not aligned_returns_df.isnull().all().all():
+            portfolio_historical_returns = aligned_returns_df.dot(full_weights) # Calculate portfolio historical returns
+            
+            if not portfolio_historical_returns.empty and not portfolio_historical_returns.isnull().all():
+                max_drawdown_val = _calculate_max_drawdown(portfolio_historical_returns)
+                sortino_ratio_val = _calculate_sortino_ratio(portfolio_historical_returns, risk_free_rate, annualization_factor)
+                
+                if max_drawdown_val > 1e-9: # Avoid division by zero for Calmar
+                    calmar_ratio_val = opt_return / max_drawdown_val
+                else: # If max drawdown is zero (e.g. all positive returns), Calmar can be very high or undefined
+                    calmar_ratio_val = 100.0 if opt_return > 0 else 0.0
+
+    # Calculate CVaR (e.g., 95% Historical CVaR)
+    cvar_95 = None
+    if not portfolio_historical_returns.empty and not portfolio_historical_returns.isnull().all():
+        confidence_level = 0.95
+        var_95 = portfolio_historical_returns.quantile(1 - confidence_level)
+        cvar_95_val = portfolio_historical_returns[portfolio_historical_returns <= var_95].mean()
+        if pd.notna(cvar_95_val):
+            cvar_95 = round(cvar_95_val, 6)
+            logger.info(f"Calculated CVaR (95%): {cvar_95}")
         else:
-            logger.warning("Aligned historical returns DataFrame is empty, cannot calculate CVaR.")
+            logger.warning("CVaR calculation resulted in NaN, possibly due to insufficient data points beyond VaR.")
     else:
-        logger.warning("Historical period returns not provided or empty, cannot calculate CVaR.")
+        logger.warning("Portfolio historical returns are empty or all NaN, cannot calculate CVaR.")
+
+    # Filtered covariance matrix for assets in the portfolio
+    optimized_covariance_matrix = pd.DataFrame()
+    if not non_zero_weights.empty:
+        optimized_covariance_matrix = covariance_matrix.loc[non_zero_weights.index, non_zero_weights.index]
+
 
     return {
-        "weights": non_zero_weights,  # Only return non-zero weights
+        "weights": non_zero_weights.to_dict(),  # Return non-zero weights as dict
         "expected_annual_return": round(opt_return, 6),
         "annual_volatility": round(opt_volatility, 6),
         "sharpe_ratio": round(sharpe_ratio, 6),
-        "cvar_95_historical_period": cvar_95, # Added CVaR
+        "cvar_95_historical_period": cvar_95,
+        "max_drawdown": round(max_drawdown_val, 6),
+        "sortino_ratio": round(sortino_ratio_val, 6),
+        "calmar_ratio": round(calmar_ratio_val, 6),
+        "covariance_matrix_optimized": optimized_covariance_matrix.to_dict(orient='index'), # Cov matrix for optimized portfolio
         "total_assets_considered": len(assets),
         "assets_with_allocation": len(non_zero_weights)
     }

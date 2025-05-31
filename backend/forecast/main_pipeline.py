@@ -290,7 +290,7 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         ta_signals = generate_ta_signals(
             asset_symbol=asset_symbol,
             chain_id=chain_id,
-            token_address=signal_token_address, # Use base_token_address
+            base_token_address=signal_token_address, # Use base_token_address
             ohlcv_df=ohlcv_df.copy(), # Pass a copy
             current_price=current_price
         )
@@ -301,7 +301,7 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         quant_signals = generate_quant_advanced_signals(
             asset_symbol=asset_symbol,
             chain_id=chain_id,
-            token_address=signal_token_address, # Use base_token_address
+            base_token_address=signal_token_address, # Use base_token_address
             ohlcv_df=ohlcv_df.copy(), # Pass a copy
             current_price=current_price,
             trading_periods_per_year=trading_periods_per_year_quant
@@ -327,7 +327,7 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
                 ForecastSignalRecord(
                     asset_symbol=sig.asset_symbol,
                     chain_id=sig.chain_id if sig.chain_id is not None else chain_id, # Ensure chain_id is present
-                    token_address=sig.token_address if sig.token_address is not None else "N/A", # Ensure token_address
+                    base_token_address=sig.base_token_address if sig.base_token_address is not None else "N/A", # Ensure base_token_address
                     signal_type=sig.signal_type,
                     confidence=sig.confidence,
                     details=sig.details,
@@ -392,9 +392,11 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
     optimized_portfolio = optimize_portfolio_mvo(
         expected_returns=mvo_inputs["expected_returns"],
         covariance_matrix=mvo_inputs["covariance_matrix"],
+        historical_period_returns_df=mvo_inputs.get("historical_period_returns_df"),
         risk_free_rate=risk_free_rate,
+        annualization_factor=annualization_factor,
         objective=mvo_objective,
-        target_return=target_return_param 
+        target_return=target_return_param
     )
 
     if optimized_portfolio:

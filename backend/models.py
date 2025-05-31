@@ -30,13 +30,14 @@ class FusionOrderSubmitRequest(BaseModel):
 
 @dataclass
 class Signal:
-    asset_symbol: str
+    asset_symbol: str # Global symbol e.g. "ETH-USDC_on_Optimism"
     signal_type: str
     confidence: float
     details: Dict[str, Any]
-    timestamp: int
+    timestamp: int # Forecast timestamp
     chain_id: Optional[int] = None
-    token_address: Optional[str] = None
+    base_token_address: Optional[str] = None # Renamed from token_address
+    # Optional: add quote_token_address, base_token_symbol, quote_token_symbol if needed by signal generation/ranking logic itself
 
 @dataclass
 class OHLCVDataPoint:
@@ -94,14 +95,17 @@ class StoredPortfolioData(BaseModel):
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ForecastSignalRecord(BaseModel):
-    asset_symbol: str
+    asset_symbol: str                 # e.g., "ETH-USDC_on_Optimism" - Global identifier
     chain_id: int
-    token_address: str # Base token address
-    signal_type: str # e.g., "TA_RSI_OVERSOLD", "QUANT_MOMENTUM_HIGH_SHARPE"
+    base_token_address: Optional[str] = None  # Changed to Optional
+    quote_token_address: Optional[str] = None 
+    base_token_symbol: Optional[str] = None   
+    quote_token_symbol: Optional[str] = None  
+    signal_type: str 
     confidence: float
-    details: Dict[str, Any] # Specifics of the signal
-    forecast_timestamp: int # Timestamp when the forecast was made (UTC seconds)
-    ohlcv_data_timestamp: int # Timestamp of the last OHLCV data point used for this forecast
+    details: Dict[str, Any] 
+    forecast_timestamp: int 
+    ohlcv_data_timestamp: int 
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class SingleChainPortfolioOptimizationResult(BaseModel):

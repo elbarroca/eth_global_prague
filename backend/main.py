@@ -671,12 +671,40 @@ async def get_optimized_portfolios_for_chains(
         original_chain_id = chain_ids_input_list[i] # Use the list here
         processed_chain_name = CHAIN_ID_TO_NAME.get(original_chain_id, f"Unknown Chain ({original_chain_id})")
 
-        if isinstance(result_or_exc, Exception):
-            logger.error(f"Data gathering task for chain {original_chain_id} ({processed_chain_name}) failed with exception: {result_or_exc}", exc_info=True)
-            chain_processing_statuses[str(original_chain_id)] = {"chain_name": processed_chain_name, "status": "error_task_exception", "error_message": str(result_or_exc), "assets_found": 0}
+        # Explicitly check for CancelledError first
+        if isinstance(result_or_exc, asyncio.CancelledError):
+            logger.warning(f"Data gathering task for chain {original_chain_id} ({processed_chain_name}) was cancelled.")
+            chain_processing_statuses[str(original_chain_id)] = {
+                "chain_name": processed_chain_name,
+                "status": "error_task_cancelled",
+                "error_message": "Task was cancelled.",
+                "assets_found": 0
+            }
+            continue
+        # Then check for other exceptions
+        elif isinstance(result_or_exc, Exception):
+            logger.error(f"Data gathering task for chain {original_chain_id} ({processed_chain_name}) failed with exception: {type(result_or_exc).__name__} - {str(result_or_exc)}", exc_info=result_or_exc)
+            chain_processing_statuses[str(original_chain_id)] = {
+                "chain_name": processed_chain_name,
+                "status": "error_task_exception",
+                "error_message": f"{type(result_or_exc).__name__}: {str(result_or_exc)}",
+                "assets_found": 0
+            }
             continue
 
-        _chain_id, _chain_name, asset_data_list, error_msg_chain = result_or_exc
+        # If we reach here, result_or_exc should be a valid tuple
+        try:
+            _chain_id, _chain_name, asset_data_list, error_msg_chain = result_or_exc
+        except (TypeError, ValueError) as e:
+            logger.error(f"Failed to unpack result for chain {original_chain_id} ({processed_chain_name}). Result was: {result_or_exc}. Error: {e}", exc_info=True)
+            chain_processing_statuses[str(original_chain_id)] = {
+                "chain_name": processed_chain_name,
+                "status": "error_unpacking_result",
+                "error_message": f"Failed to unpack result: {str(e)}",
+                "assets_found": 0
+            }
+            continue
+        
         chain_processing_statuses[str(_chain_id)] = {
             "chain_name": _chain_name, "status": "success_data_gathering" if not error_msg_chain else "partial_data_gathering",
             "error_message": error_msg_chain, "assets_found": len(asset_data_list)
@@ -735,23 +763,6 @@ async def get_optimized_portfolios_for_chains(
 
         if retrieved_db_signals:
             logger.info(f"Using {len(retrieved_db_signals)} cached forecast signals for {asset_symbol_g}.")
-            # Convert ForecastSignalRecord back to Signal (if necessary, or adapt ranking function)
-            # For now, assuming Signal and ForecastSignalRecord are compatible enough for rank_assets_based_on_signals
-            # or that rank_assets_based_on_signals can handle a list of ForecastSignalRecord.
-            # Let's assume for now the `Signal` dataclass and `ForecastSignalRecord` pydantic model are compatible for ranking.
-            # If not, a conversion step would be needed here.
-            # Example conversion (if Signal dataclass is strictly needed by ranking fn):
-            # global_all_signals[asset_symbol_g] = [
-            #     Signal(
-            #         asset_symbol=rec.asset_symbol, signal_type=rec.signal_type, confidence=rec.confidence,
-            #         details=rec.details, timestamp=rec.forecast_timestamp, # or ohlcv_data_timestamp based on ranker needs
-            #         chain_id=rec.chain_id, token_address=rec.token_address
-            #     ) for rec in retrieved_db_signals
-            # ]
-            # For simplicity now, assign directly if structures are close enough for ranking.
-            # The Signal model has: asset_symbol, signal_type, confidence, details, timestamp, chain_id, token_address
-            # ForecastSignalRecord has these and more. `rank_assets_based_on_signals` uses signal_type and confidence.
-            # The `timestamp` field in Signal might be ambiguous. Let's map forecast_timestamp to it.
             current_signals_for_asset = []
             for rec in retrieved_db_signals:
                 current_signals_for_asset.append(Signal(
@@ -759,9 +770,9 @@ async def get_optimized_portfolios_for_chains(
                     signal_type=rec.signal_type,
                     confidence=rec.confidence,
                     details=rec.details,
-                    timestamp=rec.forecast_timestamp, # Using forecast_timestamp here
+                    timestamp=rec.forecast_timestamp,
                     chain_id=rec.chain_id,
-                    token_address=rec.token_address
+                    base_token_address=rec.base_token_address
                 ))
             global_all_signals[asset_symbol_g] = current_signals_for_asset
         else:
@@ -772,9 +783,6 @@ async def get_optimized_portfolios_for_chains(
             generated_signals_list = ta_signals_g + quant_signals_g
             global_all_signals[asset_symbol_g] = generated_signals_list
             
-            # Store newly generated signals (this part is already in the subsequent block, let's ensure it uses the generated_signals_list)
-            # The existing block for storing signals will pick these up.
-
     if not global_all_signals:
         # Before raising, check if it was due to all assets failing the min_data_points check
         if not valid_identifiers_for_forecast or all(len(ohlcv_data_global[ident["asset_symbol"]]) < 50 for ident in valid_identifiers_for_forecast if ident["asset_symbol"] in ohlcv_data_global):
@@ -788,25 +796,33 @@ async def get_optimized_portfolios_for_chains(
         asset_info_orig = next((aig for aig in all_asset_identifiers_global if aig["asset_symbol"] == asset_sym_g), None)
         if not asset_info_orig: continue
 
-        # The logic for 'was_from_cache' was a bit complex to reliably implement here
-        # without changing how signals are collected (e.g., into separate lists for new vs cached).
-        # For now, the current behavior is: if cached signals are used, they are used.
-        # If new signals are generated, they are used.
-        # All signals that end up in `global_all_signals` (whether from cache or newly generated)
-        # are then prepared to be written to the ForecastSignalRecord collection with the *current_forecast_time_global*.
-        # This means cached signals, when re-processed in a new run, would get a new forecast_timestamp if they are included again.
-        # get_recent_forecast_signals always fetches the latest forecast_timestamp batch, so this is somewhat self-correcting.
+        last_ohlcv_ts_g = int(ohlcv_df_g['timestamp'].iloc[-1]) if asset_sym_g in ohlcv_data_global and not ohlcv_data_global[asset_sym_g].empty else 0
+        
+        # Parse base and quote symbols from asset_sym_g (e.g., "WBTC-USDC_on_Arbitrum")
+        base_s = None
+        quote_s = None
+        try:
+            pair_part = asset_sym_g.split('_on_')[0]
+            parts = pair_part.split('-')
+            if len(parts) >= 1:
+                base_s = parts[0]
+            if len(parts) >= 2:
+                quote_s = parts[1]
+        except Exception:
+            logger.warning(f"Could not parse base/quote symbols from asset_symbol: {asset_sym_g}")
 
-        last_ohlcv_ts_g = int(ohlcv_data_global[asset_sym_g]['timestamp'].iloc[-1]) if asset_sym_g in ohlcv_data_global and not ohlcv_data_global[asset_sym_g].empty else 0
         for sig_g in sig_list_g: # sig_list_g is List[Signal]
             signals_to_save_globally.append(ForecastSignalRecord(
                 asset_symbol=sig_g.asset_symbol, 
                 chain_id=asset_info_orig["chain_id"],
-                token_address=asset_info_orig["base_token_address"],
+                base_token_address=asset_info_orig["base_token_address"],
+                quote_token_address=asset_info_orig.get("quote_token_address"),
+                base_token_symbol=base_s,
+                quote_token_symbol=quote_s,
                 signal_type=sig_g.signal_type, 
                 confidence=sig_g.confidence, 
                 details=sig_g.details,
-                forecast_timestamp=current_forecast_time_global, # All signals in this batch get current run's timestamp
+                forecast_timestamp=current_forecast_time_global, 
                 ohlcv_data_timestamp=last_ohlcv_ts_g,
             ))
             
@@ -852,7 +868,8 @@ async def get_optimized_portfolios_for_chains(
         expected_returns=mvo_inputs_global["expected_returns"],
         covariance_matrix=mvo_inputs_global["covariance_matrix"],
         historical_period_returns_df=mvo_inputs_global.get("historical_period_returns_df"), # Pass historical returns for CVaR
-        risk_free_rate=risk_free_rate, 
+        risk_free_rate=risk_free_rate,
+        annualization_factor=annualization_factor,
         objective=mvo_objective, 
         target_return=target_return
     )
@@ -862,12 +879,51 @@ async def get_optimized_portfolios_for_chains(
     optimized_global_portfolio_serializable = optimized_global_portfolio_raw.copy()
     if "weights" in optimized_global_portfolio_serializable and isinstance(optimized_global_portfolio_serializable["weights"], pd.Series):
         optimized_global_portfolio_serializable["weights"] = optimized_global_portfolio_serializable["weights"].to_dict()
-    
+
+    # --- Calculate alternative MVO portfolios ---
+    alternative_optimized_portfolios = {}
+    mvo_options_for_alternatives = ["maximize_sharpe", "minimize_volatility", "maximize_return"]
+
+    for alt_obj_name in mvo_options_for_alternatives:
+        # For these alternatives, target_return is always None (absolute min_vol for "minimize_volatility")
+        alt_calc_target_return = None
+        
+        is_primary_equivalent = (
+            alt_obj_name == mvo_objective and \
+            alt_calc_target_return == target_return # target_return is the user's original input
+        )
+
+        if not is_primary_equivalent:
+            logger.info(f"Calculating alternative global portfolio for objective: {alt_obj_name}")
+            try:
+                alt_portfolio_raw = optimize_portfolio_mvo(
+                    expected_returns=mvo_inputs_global["expected_returns"],
+                    covariance_matrix=mvo_inputs_global["covariance_matrix"],
+                    historical_period_returns_df=mvo_inputs_global.get("historical_period_returns_df"),
+                    risk_free_rate=risk_free_rate,
+                    annualization_factor=annualization_factor,
+                    objective=alt_obj_name,
+                    target_return=alt_calc_target_return 
+                )
+
+                if alt_portfolio_raw:
+                    alt_portfolio_serializable = alt_portfolio_raw.copy()
+                    if "weights" in alt_portfolio_serializable and isinstance(alt_portfolio_serializable["weights"], pd.Series):
+                        alt_portfolio_serializable["weights"] = alt_portfolio_serializable["weights"].to_dict()
+                    alternative_optimized_portfolios[alt_obj_name] = alt_portfolio_serializable
+                else:
+                    logger.warning(f"Failed to calculate alternative global portfolio for {alt_obj_name}.")
+                    alternative_optimized_portfolios[alt_obj_name] = {"error": f"Optimization failed for {alt_obj_name}"}
+            except Exception as e_alt_mvo:
+                logger.error(f"Error calculating alternative MVO for {alt_obj_name}: {e_alt_mvo}", exc_info=True)
+                alternative_optimized_portfolios[alt_obj_name] = {"error": f"Exception during {alt_obj_name} optimization: {str(e_alt_mvo)}"}
+
     # --- Step 8: Format and Return Final Response ---
     total_duration = time.time() - main_request_start_time
     global_portfolio_data_payload = {
         "ranked_assets_summary": global_ranked_assets_df[['asset', 'score', 'num_bullish', 'num_bearish']].head(20).to_dict(orient='records'),
         "optimized_portfolio_details": optimized_global_portfolio_serializable,
+        "alternative_optimized_portfolios": alternative_optimized_portfolios,
         "mvo_inputs_summary": {
             "expected_returns_top_n": mvo_inputs_global["expected_returns"].nlargest(min(5, len(mvo_inputs_global["expected_returns"]))).to_dict(),
             "covariance_matrix_shape": str(mvo_inputs_global["covariance_matrix"].shape),
