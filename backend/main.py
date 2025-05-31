@@ -869,6 +869,32 @@ async def get_optimized_portfolios_for_chains(
             raise HTTPException(status_code=500, detail="Global asset ranking produced an empty result from non-empty signals.")
     logger.info(f"Global Asset Ranking (Top 5):\n{global_ranked_assets_df.head().to_string()}")
 
+    # --- Create a DataFrame from all_asset_identifiers_global for easy merging ---
+    asset_details_df = pd.DataFrame(all_asset_identifiers_global)
+    # Rename 'asset_symbol' to 'asset' to match the column name in global_ranked_assets_df for merging
+    asset_details_df.rename(columns={'asset_symbol': 'asset'}, inplace=True)
+
+    # Merge ranked assets with their details (chain_id, addresses)
+    # Ensure 'asset' column exists and is the correct key in both DataFrames
+    if 'asset' in global_ranked_assets_df.columns and 'asset' in asset_details_df.columns:
+        global_ranked_assets_df_with_details = pd.merge(
+            global_ranked_assets_df,
+            asset_details_df[['asset', 'chain_id', 'base_token_address', 'quote_token_address', 'chain_name']],
+            on='asset',
+            how='left'
+        )
+    else:
+        logger.warning("Could not merge asset details into ranked_assets_df due to missing 'asset' column key.")
+        global_ranked_assets_df_with_details = global_ranked_assets_df # Fallback
+        # Add placeholder columns if they don't exist to prevent errors later, though this is not ideal
+        if 'chain_id' not in global_ranked_assets_df_with_details.columns:
+            global_ranked_assets_df_with_details['chain_id'] = 0 # Placeholder
+        if 'base_token_address' not in global_ranked_assets_df_with_details.columns:
+            global_ranked_assets_df_with_details['base_token_address'] = '' # Placeholder
+        if 'quote_token_address' not in global_ranked_assets_df_with_details.columns:
+            global_ranked_assets_df_with_details['quote_token_address'] = '' # Placeholder
+
+
     # --- Step 5: Select Assets for Global MVO ---
     assets_for_global_mvo_input = [
         asset_sym for asset_sym in global_ranked_assets_df['asset'].tolist()
@@ -883,7 +909,7 @@ async def get_optimized_portfolios_for_chains(
     logger.info(f"Calculating MVO inputs for {len(assets_for_global_mvo_input)} global assets...")
     mvo_inputs_global = calculate_mvo_inputs(
         ohlcv_data=ohlcv_for_global_mvo_input,
-        ranked_assets_df=global_ranked_assets_df[global_ranked_assets_df['asset'].isin(assets_for_global_mvo_input)].copy(), # Pass filtered df
+        ranked_assets_df=global_ranked_assets_df_with_details[global_ranked_assets_df_with_details['asset'].isin(assets_for_global_mvo_input)].copy(), # Pass filtered df
         annualization_factor=annualization_factor
     )
     if mvo_inputs_global["expected_returns"].empty or mvo_inputs_global["covariance_matrix"].empty:
@@ -948,7 +974,10 @@ async def get_optimized_portfolios_for_chains(
     # --- Step 8: Format and Return Final Response ---
     total_duration = time.time() - main_request_start_time
     global_portfolio_data_payload = {
-        "ranked_assets_summary": global_ranked_assets_df[['asset', 'score', 'num_bullish', 'num_bearish']].head(20).to_dict(orient='records'),
+        "ranked_assets_summary": global_ranked_assets_df_with_details[[
+            'asset', 'score', 'num_bullish', 'num_bearish', 
+            'chain_id', 'base_token_address', 'quote_token_address'
+        ]].head(20).to_dict(orient='records'),
         "optimized_portfolio_details": optimized_global_portfolio_serializable,
         "alternative_optimized_portfolios": alternative_optimized_portfolios,
         "mvo_inputs_summary": {
@@ -1101,7 +1130,7 @@ async def get_optimized_portfolio_for_chain(
         "hour4": ("4hour", 14400, 365 * 6),
         "day": ("day", 86400, 365),
         "week": ("week", 604800, 52),
-        "month": ("month", 2592000, 12)  # Approx 30 days
+        "month": ("month", 2592000, 12)
     }
     
     timeframe_lower = timeframe.lower()
