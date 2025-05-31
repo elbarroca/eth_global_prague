@@ -9,7 +9,7 @@ import sdk from "@/providers/fusion-sdk";
 import { getRandomBytes32 } from "@/utils/get-random-bytes";
 import { sleep } from "@/utils/sleep";
 
-export const TOKEN_ADDRESS = "0x4200000000000000000000000000000000000006"; //wETH on base
+export const TOKEN_ADDRESS = "0x4200000000000000000000000000000006"; //wETH on base
 export const SPENDER = "0x111111125421ca6dc452d289314280a0f8842a65";
 
 export interface quoteParams {
@@ -36,6 +36,11 @@ const source = "sdk-tutorial";
 
 export async function getQuoteAndExecuteOrder(params: quoteParams) {
   try {
+    // Check if SDK is available
+    if (!sdk) {
+      throw new Error('1inch SDK not available. Please check environment configuration.');
+    }
+
     const quote = await sdk.getQuote(params);
     const secretsCount = quote.getPreset().secretsCount;
 
@@ -122,6 +127,7 @@ export async function getQuoteAndExecuteOrder(params: quoteParams) {
 
 export function useOrder() {
   return {
-    getQuoteAndExecuteOrder
+    getQuoteAndExecuteOrder,
+    isSDKAvailable: !!sdk
   };
 }

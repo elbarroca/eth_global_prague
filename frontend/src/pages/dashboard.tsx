@@ -18,6 +18,7 @@ import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedP
 import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
 import { AssetDeepDiveCard } from '@/components/optimizer/AssetDeepDiveCard';
 import EfficientFrontierPlot from '@/components/optimizer/EfficientFrontierPlot';
+import { LiquidatePortfolioButton } from '@/components/optimizer/LiquidatePortfolioButton';
 
 import {
   PortfolioApiResponse,
@@ -28,11 +29,7 @@ import {
   chainOptions,
 } from '@/types/portfolio-api';
 
-import { useOrder } from '@/hooks/1inch/useOrder';
-import { TOKEN_ADDRESS, SPENDER } from '@/hooks/1inch/useOrder';
-import { SupportedChain } from '@1inch/cross-chain-sdk';
 
-const { getQuoteAndExecuteOrder } = useOrder();
 
 // Define Zod schema for form validation (can be co-located or imported)
 const portfolioFormSchema = z.object({
@@ -63,7 +60,6 @@ const Dashboard: NextPage = () => {
   
   // New state for tracking selected chains with full details
   const [selectedChains, setSelectedChains] = useState<SelectedChainDetails[]>([]);
-  const [isExecutingTx, setIsExecutingTx] = useState(false);
 
   const formMethods = useForm<PortfolioFormInputs, any, PortfolioFormInputs>({
     resolver: zodResolver(portfolioFormSchema),
@@ -150,14 +146,6 @@ const Dashboard: NextPage = () => {
       setIsLoading(false);
     }
   };
-
-  // New function to execute cross-chain transaction
-  const executeTransaction = async () => {
-    if (!accountAddress || selectedChains.length < 2) {
-      console.error("Missing wallet address or need at least 2 chains for cross-chain transaction");
-      return;
-    }
-
     setIsExecutingTx(true);
     try {
       // Example transaction - in real implementation you'd need to decide which chains to use
@@ -189,6 +177,7 @@ const Dashboard: NextPage = () => {
       setIsExecutingTx(false);
     }
   };
+
 
   const handleAssetSelect = (asset: RankedAssetSummary) => {
     setSelectedAssetForDeepDive(asset);
@@ -225,11 +214,10 @@ const Dashboard: NextPage = () => {
 
   // Add a key to result components to force re-mount and re-animate on new data
   const resultsKey = portfolioData ? JSON.stringify(portfolioData.overall_request_summary.requested_chain_ids) + portfolioData.overall_request_summary.timeframe : 'no_results';
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 text-gray-100">
       <Head>
-        <title>DeFi Portfolio Optimizer - AlphaScan</title>
+        <title>DeFi Portfolio Optimizer - QuantumLeap</title>
         <meta
           content="Optimize your DeFi portfolio across multiple chains with advanced analytics."
           name="description"
@@ -247,7 +235,7 @@ const Dashboard: NextPage = () => {
               </Button>
             </Link>
             <div className="text-xl font-bold text-white">
-              DeFi Optimizer
+              QuantumLeap
             </div>
           </div>
           <ConnectButton />
@@ -320,29 +308,6 @@ const Dashboard: NextPage = () => {
                       <ArrowLeft className="h-4 w-4 mr-1.5" />
                       Back to Optimizer Form
                     </Button>
-                    
-                    {selectedChains.length >= 2 && (
-                      <Button
-                        onClick={executeTransaction}
-                        disabled={isExecutingTx}
-                        className="mb-6 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white font-semibold rounded-xl px-6 py-3 shadow-lg hover:shadow-xl transition-all duration-300"
-                      >
-                        {isExecutingTx ? (
-                          <>
-                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Processing...
-                          </>
-                        ) : (
-                          <>
-                            <ArrowRightLeft className="h-5 w-5 mr-2" />
-                            Execute Cross-Chain Transaction
-                          </>
-                        )}
-                      </Button>
-                    )}
                   </div>
 
                   {/* Debugging - Show Selected Chains (can be removed in production) */}
@@ -435,6 +400,11 @@ const Dashboard: NextPage = () => {
                             />
                           }
                         />
+                        
+                        <LiquidatePortfolioButton 
+                          portfolioWeights={portfolioDetailsToDisplay.weights}
+                          selectedChains={selectedChains.map(chain => chain.id)}
+                        />
                       </>
                     )
                   )}
@@ -448,7 +418,7 @@ const Dashboard: NextPage = () => {
       <footer className="px-6 py-10 border-t border-gray-700 bg-slate-900/80 mt-12">
         <div className="max-w-7xl mx-auto text-center">
           <p className="text-gray-400 text-sm">
-            AlphaScan DeFi Portfolio Optimizer | Harnessing data for smarter investments ⛓️
+            QuantumLeap DeFi Portfolio Optimizer | Harnessing data for smarter investments ⛓️
           </p>
         </div>
       </footer>
