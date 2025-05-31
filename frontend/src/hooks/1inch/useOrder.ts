@@ -1,0 +1,94 @@
+import {  
+    HashLock,  
+    SupportedChain,  
+    OrderParams,
+    PresetEnum,  
+} from '@1inch/cross-chain-sdk';
+import sdk from "@/providers/fusion-sdk";
+import { getRandomBytes32 } from "@/utils/get-random-bytes";
+
+export const TOKEN_ADDRESS = "0x4200000000000000000000000000000000000006"; //wETH on base
+export const SPENDER = "0x111111125421ca6dc452d289314280a0f8842a65";
+
+export interface quoteParams {
+    srcChainId: SupportedChain;
+    dstChainId: SupportedChain;
+    srcTokenAddress: string;
+    dstTokenAddress: string;
+    amount: string;
+    enableEstimate: boolean;
+    walletAddress: string;
+}
+
+// const params = {
+//     srcChainId: NetworkEnum.COINBASE,
+//     dstChainId: NetworkEnum.ARBITRUM,
+//     srcTokenAddress: "0xc5fecC3a29Fb57B5024eEc8a2239d4621e111CBE", //1inch on base
+//     dstTokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", //usdc on arbitrum
+//     amount: "10000000000000000000", // 10 1inch
+//     enableEstimate: true,
+//     walletAddress: makerAddress,
+//   };
+  
+const source = "sdk-tutorial";
+
+export async function getQuoteAndExecuteOrder(params: quoteParams) {
+  try {
+    const quote = await sdk.getQuote(params);
+    const secretsCount = quote.getPreset().secretsCount;
+
+    const secrets = Array.from({ length: secretsCount }).map(() =>
+      getRandomBytes32()
+    );
+    const secretHashes = secrets.map((x) => HashLock.hashSecret(x));
+
+    const hashLock =  
+        secrets.length === 1  
+            ? HashLock.forSingleFill(secrets[0])  
+            : HashLock.forMultipleFills(HashLock.getMerkleLeaves(secrets)) 
+
+    try {
+      const { hash, quoteId, order } = await sdk.createOrder(quote, {
+        walletAddress: params.walletAddress,
+        hashLock,
+        preset: PresetEnum.fast,
+        source,
+        secretHashes,
+      } as OrderParams);
+      console.log({ hash, quoteId, order }, "order created");
+
+      try {
+        const orderInfo = await sdk.submitOrder(
+          quote.srcChainId,
+          order,
+          quoteId,
+          secretHashes
+        );
+        return { success: true, orderInfo, hash, quoteId, order };
+      } catch (submitError: any) {
+        if (submitError.response?.data) {
+          console.error("Response data:", submitError.response.data);
+        } else {
+          console.error("Error details:", submitError);
+        }
+        return { success: false, error: submitError };
+      }
+    } catch (error: any) {
+      if (error.response?.data) {
+        console.error("Response data:", error.response.data);
+      } else {
+        console.error("Error details:", error);
+      }
+      return { success: false, error };
+    }
+  } catch (err: any) {
+    console.error("Error inside async block:", err);
+    return { success: false, error: err };
+  }
+}
+
+export function useOrder() {
+  return {
+    getQuoteAndExecuteOrder
+  };
+}

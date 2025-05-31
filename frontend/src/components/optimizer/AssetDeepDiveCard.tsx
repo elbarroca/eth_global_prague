@@ -7,8 +7,14 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Activity, X } from 'lucide-react';
 import { RankedAssetSummary } from '@/types/portfolio-api';
 import { Button } from '../ui/button';
+<<<<<<< HEAD
 import { useAssetData } from '@/hooks/useAssetData';
 import { useAssetCoreDetails } from '@/hooks/useAssetCoreDetails';
+=======
+import { useOhlcvData } from '@/hooks/mongo/useOHLCV'; // Corrected import path
+import { useForecastSignals } from '@/hooks/mongo/useForecast'; // Corrected import path
+// import { useAssetCoreDetails, AssetCoreDetails } from '@/hooks/mongo/useAssetCoreDetails'; // Adjust path if needed
+>>>>>>> c12bea4bc7c5ae306b86dae483d12381f417d034
 
 interface OHLCVDataPoint {
   time?: number; // timestamp
