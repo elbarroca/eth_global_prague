@@ -8,7 +8,7 @@ import { OverallRequestSummary, RankedAssetSummary } from '@/types/portfolio-api
 import { Button } from '../ui/button';
 import { useOhlcvData } from '@/hooks/mongo/useOHLCV'; // Corrected import path
 import { useForecastSignals } from '@/hooks/mongo/useForecast'; // Corrected import path
-import { useAssetCoreDetails, AssetCoreDetails } from '@/hooks/mongo/useAssetCoreDetails'; // Adjust path if needed
+// import { useAssetCoreDetails, AssetCoreDetails } from '@/hooks/mongo/useAssetCoreDetails'; // Adjust path if needed
 
 interface OHLCVDataPoint {
   time: number; // timestamp
