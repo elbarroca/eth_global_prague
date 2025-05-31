@@ -10,7 +10,10 @@ NATIVE_ASSET_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
 COMMON_STABLECOIN_SYMBOLS = {
     "USDT", "USDC", "USDS", "USDE", "DAI", "SUSD", "USD1", "FDUSD", "PYUSD", "USDX",
-    "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "PAX",
+    "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "PAX", "EURA", "EURS", "USDC.E",
+    "USDT.E", "USDS_2", "USDC_2", "USDT_2", "USDC.E", "USDT.E", "USDC_E", "USDT_E", "ALUSD",
+    "DOLA", "USD+", "USDPLUS", "USD_PLUS", "MIMATIC", "MAI", "AGEUR", "JEUR", "CEUR",
+    "USDD", "USTC", "USDH", "USDN", "USDK", "USDJ", "USDR", "USDS", "USDT", "USDC"
 }
 # Chain IDs (can be expanded)
 ETHEREUM_CHAIN_ID = 1
