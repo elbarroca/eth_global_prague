@@ -4,7 +4,7 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, Briefcase, Settings, BarChart } from 'lucide-react';
+import { ArrowLeft, Briefcase, Settings, BarChart, Database, Activity, ArrowRightLeft } from 'lucide-react';
 import { useAccount } from 'wagmi';
 import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
@@ -24,7 +24,15 @@ import {
   PortfolioFormInputs,
   RankedAssetSummary,
   OptimizedPortfolioDetails,
+  ChainOption,
+  chainOptions,
 } from '@/types/portfolio-api';
+
+import { useOrder } from '@/hooks/1inch/useOrder';
+import { TOKEN_ADDRESS, SPENDER } from '@/hooks/1inch/useOrder';
+import { SupportedChain } from '@1inch/cross-chain-sdk';
+
+const { getQuoteAndExecuteOrder } = useOrder();
 
 // Define Zod schema for form validation (can be co-located or imported)
 const portfolioFormSchema = z.object({
@@ -36,17 +44,26 @@ const portfolioFormSchema = z.object({
   riskFreeRate: z.coerce.number().min(0).max(1).optional(),
 });
 
-const Dashboard: NextPage = () => {
-  const { isConnected } = useAccount();
-  // const { portfolios, activePortfolioId, setActivePortfolio } = usePortfolioStore(); // Commented out as section is removed
-  // const activePortfolio = portfolios.find(p => p.id === activePortfolioId); // Commented out
+// Define a type for storing selected chain details
+interface SelectedChainDetails {
+  id: string;
+  chainId: number;
+  name: string;
+}
 
+const Dashboard: NextPage = () => {
+  const { address: accountAddress, isConnected } = useAccount();
+  
   const [portfolioData, setPortfolioData] = useState<PortfolioApiResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [selectedAssetForDeepDive, setSelectedAssetForDeepDive] = useState<RankedAssetSummary | null>(null);
   const [displayedMVOObjective, setDisplayedMVOObjective] = useState<string>("primary");
+  
+  // New state for tracking selected chains with full details
+  const [selectedChains, setSelectedChains] = useState<SelectedChainDetails[]>([]);
+  const [isExecutingTx, setIsExecutingTx] = useState(false);
 
   const formMethods = useForm<PortfolioFormInputs, any, PortfolioFormInputs>({
     resolver: zodResolver(portfolioFormSchema),
@@ -60,11 +77,27 @@ const Dashboard: NextPage = () => {
     },
   });
 
+  // Function to map chain IDs to full chain details
+  const mapChainsToDetails = (chainIds: string[]): SelectedChainDetails[] => {
+    return chainIds.map(id => {
+      const chainOption = chainOptions.find(option => option.id === id);
+      return {
+        id,
+        chainId: parseInt(id),
+        name: chainOption?.name || `Chain ${id}`
+      };
+    });
+  };
+
   const onSubmit = async (data: PortfolioFormInputs) => {
     setIsLoading(true);
     setApiError(null);
     setShowResults(false);
     setSelectedAssetForDeepDive(null);
+    
+    // Store selected chains with their details
+    setSelectedChains(mapChainsToDetails(data.chains));
+    
     console.log("Form Data Submitted for API call:", data);
 
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -118,6 +151,45 @@ const Dashboard: NextPage = () => {
     }
   };
 
+  // New function to execute cross-chain transaction
+  const executeTransaction = async () => {
+    if (!accountAddress || selectedChains.length < 2) {
+      console.error("Missing wallet address or need at least 2 chains for cross-chain transaction");
+      return;
+    }
+
+    setIsExecutingTx(true);
+    try {
+      // Example transaction - in real implementation you'd need to decide which chains to use
+      // Here we're just using the first two selected chains
+      const sourceChain = selectedChains[0];
+      const destChain = selectedChains[1];
+
+      console.log(`Preparing transaction from ${sourceChain.name} to ${destChain.name}`);
+
+      const params = {
+        srcChainId: sourceChain.chainId as unknown as SupportedChain,
+        dstChainId: destChain.chainId as unknown as SupportedChain,
+        srcTokenAddress: TOKEN_ADDRESS,
+        dstTokenAddress: TOKEN_ADDRESS,
+        amount: "10000000000000000", // 0.01 ETH in wei
+        enableEstimate: true,
+        walletAddress: accountAddress
+      };
+
+      console.log("Transaction params:", params);
+      
+      // This would trigger the actual transaction
+      const result = await getQuoteAndExecuteOrder(params);
+      console.log("Transaction result:", result);
+      
+    } catch (error) {
+      console.error("Transaction error:", error);
+    } finally {
+      setIsExecutingTx(false);
+    }
+  };
+
   const handleAssetSelect = (asset: RankedAssetSummary) => {
     setSelectedAssetForDeepDive(asset);
   };
@@ -162,7 +234,7 @@ const Dashboard: NextPage = () => {
           content="Optimize your DeFi portfolio across multiple chains with advanced analytics."
           name="description"
         />
-        <link href="/favicon.ico" rel="icon" /> {/* Replace with actual favicon */}
+        <link href="/favicon.ico" rel="icon" />
       </Head>
 
       <nav className="sticky top-0 z-50 px-4 sm:px-6 py-3 border-b border-gray-700 bg-slate-900/80 backdrop-blur-lg">
@@ -237,16 +309,59 @@ const Dashboard: NextPage = () => {
 
               {showResults && portfolioData && (
                 <div key={resultsKey} className="space-y-6 mt-8">
-                  <Button 
-                    onClick={() => {
-                      setShowResults(false); 
-                      setSelectedAssetForDeepDive(null); // Also clear deep dive selection when going back
-                    }}
-                    variant="outline" 
-                    className="mb-6 bg-slate-700 hover:bg-slate-600 border-slate-600 text-gray-200 hover:text-white">
-                    <ArrowLeft className="h-4 w-4 mr-1.5" />
-                    Back to Optimizer Form
-                  </Button>
+                  <div className="flex justify-between items-center">
+                    <Button 
+                      onClick={() => {
+                        setShowResults(false); 
+                        setSelectedAssetForDeepDive(null);
+                      }}
+                      variant="outline" 
+                      className="mb-6 bg-slate-700 hover:bg-slate-600 border-slate-600 text-gray-200 hover:text-white">
+                      <ArrowLeft className="h-4 w-4 mr-1.5" />
+                      Back to Optimizer Form
+                    </Button>
+                    
+                    {selectedChains.length >= 2 && (
+                      <Button
+                        onClick={executeTransaction}
+                        disabled={isExecutingTx}
+                        className="mb-6 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-600 text-white font-semibold rounded-xl px-6 py-3 shadow-lg hover:shadow-xl transition-all duration-300"
+                      >
+                        {isExecutingTx ? (
+                          <>
+                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Processing...
+                          </>
+                        ) : (
+                          <>
+                            <ArrowRightLeft className="h-5 w-5 mr-2" />
+                            Execute Cross-Chain Transaction
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Debugging - Show Selected Chains (can be removed in production) */}
+                  {selectedChains.length > 0 && (
+                    <Card className="bg-slate-800/50 border-slate-700 shadow-lg mb-6">
+                      <CardHeader>
+                        <CardTitle className="text-white text-lg">Selected Chains</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedChains.map((chain) => (
+                            <div key={chain.id} className="px-3 py-1 bg-slate-700 rounded-md text-white">
+                              {chain.name} (ID: {chain.id})
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
 
                   {selectedAssetForDeepDive && portfolioData ? (
                     <AssetDeepDiveCard 
@@ -342,3 +457,4 @@ const Dashboard: NextPage = () => {
 };
 
 export default Dashboard; 
+
