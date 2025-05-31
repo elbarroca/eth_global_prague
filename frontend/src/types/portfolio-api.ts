@@ -119,12 +119,11 @@ export const mvoObjectiveOptions = [
 export const timeframeOptions = [
   { id: 'min5', name: '5 Minutes' },
   { id: 'min15', name: '15 Minutes' },
-  { id: 'hour1', name: '1 Hour' },
+  { id: 'hour', name: '1 Hour' },
   { id: 'hour4', name: '4 Hours' },
   { id: 'day', name: '1 Day' },
   { id: 'week', name: '1 Week' },
   { id: 'month', name: '1 Month' },
-
 ];
 
 // New types for the combined asset data endpoint
