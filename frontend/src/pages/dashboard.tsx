@@ -3,196 +3,337 @@ import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Wallet, Activity, TrendingUp, Shield, Zap, ExternalLink } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CreatePortfolioDialog } from '@/components/portfolio/CreatePortfolioDialog';
+import { PortfolioOverview } from '@/components/portfolio/PortfolioOverview';
+import { usePortfolioStore } from '@/stores/portfolio-store';
+import { ArrowLeft, Briefcase, Settings, BarChart, Database, Activity, PieChart as PieChartIcon } from 'lucide-react';
+import { useAccount } from 'wagmi';
+import React, { useState, useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import * as z from 'zod';
+
+import { PortfolioOptimizationForm } from '@/components/optimizer/PortfolioOptimizationForm';
+import { OverallRequestSummaryCard } from '@/components/optimizer/OverallRequestSummaryCard';
+import { RankedAssetsSummaryCard } from '@/components/optimizer/RankedAssetsSummaryCard';
+import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedPortfolioDetailsCard';
+import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+
+import {
+  PortfolioApiResponse,
+  PortfolioFormInputs,
+} from '@/types/portfolio-api';
+
+// Define Zod schema for form validation (can be co-located or imported)
+const portfolioFormSchema = z.object({
+  chains: z.array(z.string()).min(1, "Please select at least one chain."),
+  mvoObjective: z.string().min(1, "Please select an MVO objective."),
+  timeframe: z.string().min(1, "Please select a timeframe."),
+  targetReturn: z.coerce.number().optional(),
+  riskFreeRate: z.coerce.number().default(0.02),
+});
 
 const Dashboard: NextPage = () => {
+  const { isConnected } = useAccount();
+  const { portfolios, activePortfolioId, setActivePortfolio } = usePortfolioStore();
+  const activePortfolio = portfolios.find(p => p.id === activePortfolioId);
+
+  const [portfolioData, setPortfolioData] = useState<PortfolioApiResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [showResults, setShowResults] = useState(false);
+
+  const formMethods = useForm<PortfolioFormInputs>({
+    resolver: zodResolver(portfolioFormSchema),
+    defaultValues: {
+      chains: ['1'], // Default to Ethereum for example
+      mvoObjective: 'maximize_sharpe',
+      timeframe: '1d',
+      riskFreeRate: 0.02,
+      targetReturn: undefined,
+    },
+  });
+
+  const onSubmit = async (data: PortfolioFormInputs) => {
+    setIsLoading(true);
+    setApiError(null);
+    setShowResults(false); // Hide previous results before fetching new ones
+    // setPortfolioData(null); // Clear old data - optional, if showResults handles visibility
+    console.log("Form Data Submitted:", data);
+
+    // Simulate API call
+    setTimeout(() => {
+      const mockApiResponse: PortfolioApiResponse = {
+        results_by_chain: {
+          global_cross_chain: {
+            chain_id: 0,
+            chain_name: "Global Cross-Chain Portfolio",
+            status: "success",
+            data: {
+              ranked_assets_summary: [
+                { asset: "TRB-USDC_on_Ethereum", score: 0.77, num_bullish: 5, num_bearish: 3 },
+                { asset: "XAUt-USDC_on_Ethereum", score: 0.52, num_bullish: 2, num_bearish: 1 },
+                { asset: "MIM-USDC_on_Arbitrum", score: 0.49, num_bullish: 2, num_bearish: 1 },
+                { asset: "ELF-USDC_on_Ethereum", score: 0.02, num_bullish: 5, num_bearish: 3 },
+                { asset: "stataArbUSDCn-USDC_on_Arbitrum", score: -0.01, num_bullish: 3, num_bearish: 3 },
+              ],
+              optimized_portfolio_details: {
+                weights: { 
+                  "MIM-USDC_on_Arbitrum": 0.025670804659467774,
+                  "aEthWETH-USDC_on_Ethereum": 0.005775904935772167,
+                  "XAI-USDC_on_Ethereum": 0.014411332428068292,
+                  "ANIME-USDC_on_Arbitrum": 0.34664275084038354,
+                  "WINR-USDC_on_Arbitrum": 0.014145229590328818,
+                },
+                expected_annual_return: 45.497674,
+                annual_volatility: 0.86965,
+                sharpe_ratio: 52.294213,
+                total_assets_considered: 273,
+                assets_with_allocation: 30,
+              },
+              mvo_inputs_summary: {
+                expected_returns_top_n: { 
+                  "ANIME-USDC_on_Arbitrum": 112.9492930041536,
+                  "GS-USDC_on_Arbitrum": 87.66653399290526,
+                  "HOL-USDC_on_Arbitrum": 81.55737783892815, 
+                },
+                covariance_matrix_shape: "(273, 273)",
+                valid_symbols_count_for_mvo: 273,
+              },
+            },
+            error_message: null,
+            request_params_for_chain: {
+              chain_ids_requested: data.chains.map(id => parseInt(id, 10)),
+              timeframe: data.timeframe,
+              mvo_objective: data.mvoObjective,
+              risk_free_rate: data.riskFreeRate || 0.02,
+              annualization_factor_used: 365,
+              max_tokens_per_chain_screening: 260,
+              target_return: data.targetReturn || null,
+            },
+          },
+        },
+        overall_request_summary: {
+          requested_chain_ids: data.chains.map(id => parseInt(id, 10)),
+          timeframe: data.timeframe,
+          max_tokens_per_chain_screening: 260,
+          mvo_objective: data.mvoObjective,
+          risk_free_rate: data.riskFreeRate || 0.02,
+          annualization_factor_used: 365,
+          total_unique_assets_after_screening: 274,
+          assets_considered_for_global_mvo: 273,
+          assets_in_final_portfolio: 30,
+          total_processing_time_seconds: 20.59, // Quicker for demo
+          chain_data_gathering_summary: {
+            "1": { chain_name: "Ethereum", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('1') ? 181 : 0 },
+            "10": { chain_name: "Optimism", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('10') ? 37 : 0 },
+            "42161": { chain_name: "Arbitrum", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('42161') ? 56 : 0 },
+          },
+        },
+      };
+      setPortfolioData(mockApiResponse);
+      setIsLoading(false);
+      setShowResults(true); // Show results after fetching
+    }, 1500); // Shorter delay for demo
+  };
+
+  const globalPortfolioData = portfolioData?.results_by_chain?.["global_cross_chain"];
+
+  // Add a key to result components to force re-mount and re-animate on new data
+  const resultsKey = portfolioData ? JSON.stringify(portfolioData.overall_request_summary.requested_chain_ids) + portfolioData.overall_request_summary.timeframe : 'no_results';
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-gray-100">
       <Head>
-        <title>Dashboard - Web3 App</title>
+        <title>DeFi Portfolio Optimizer - AlphaScan</title>
         <meta
-          content="Dashboard for your Web3 application"
+          content="Optimize your DeFi portfolio across multiple chains with advanced analytics."
           name="description"
         />
-        <link href="/favicon.ico" rel="icon" />
+        <link href="/favicon.ico" rel="icon" /> {/* Replace with actual favicon */}
       </Head>
 
-      {/* Navigation */}
-      <nav className="sticky top-0 z-50 px-6 py-4 border-b border-white/20 bg-white/70 backdrop-blur-sm">
+      <nav className="sticky top-0 z-50 px-4 sm:px-6 py-3 border-b border-gray-700 bg-slate-900/80 backdrop-blur-lg">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <Link href="/">
-              <Button variant="ghost" size="sm" className="hover:bg-white/50">
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Back to Home
+              <Button variant="ghost" size="sm" className="hover:bg-slate-700 text-gray-300 hover:text-white">
+                <ArrowLeft className="h-4 w-4 mr-1.5" />
+                Home
               </Button>
             </Link>
-            <div className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-              Web3App Dashboard
+            <div className="text-xl font-bold bg-gradient-to-r from-purple-400 to-violet-300 bg-clip-text text-transparent">
+              DeFi Optimizer
             </div>
           </div>
-          <div className="flex items-center">
-            <ConnectButton />
-          </div>
+          <ConnectButton />
         </div>
       </nav>
 
-      {/* Main Dashboard */}
-      <main className="px-6 py-12">
-        <div className="max-w-7xl mx-auto">
+      <main className="px-4 sm:px-6 py-8 sm:py-12">
+        <div className="max-w-6xl mx-auto space-y-8">
           
-          {/* Welcome Section */}
-          <div className="text-center mb-12">
-            <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4 leading-tight">
-              Welcome to Your 
-              <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent block sm:inline">
-                {' '}Web3 Dashboard
-              </span>
-            </h1>
-            <p className="text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed">
-              Connect your wallet and explore the next generation of decentralized applications
-            </p>
-          </div>
+          {!isConnected ? (
+            <Card className="text-center py-12 sm:py-20 bg-slate-800/50 border-slate-700 shadow-xl">
+                <CardHeader>
+                    <Briefcase className="h-16 w-16 mx-auto mb-6 text-purple-400" />
+                    <CardTitle className="text-3xl font-bold text-white mb-3">Connect Your Wallet</CardTitle>
+                    <CardDescription className="text-lg text-gray-400 mb-6 max-w-md mx-auto">
+                        Connect your wallet to unlock advanced portfolio optimization and management features.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <ConnectButton />
+                </CardContent>
+            </Card>
+          ) : (
+            <>
+              <PortfolioOptimizationForm 
+                onSubmit={onSubmit} 
+                isLoading={isLoading} 
+                formMethods={formMethods} 
+              />
 
-          {/* Stats Cards */}
-          <div className="grid md:grid-cols-3 gap-6 mb-12">
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-6 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <Wallet className="h-6 w-6 text-blue-600" />
+              {isLoading && (
+                <Card className="bg-slate-800/50 border-slate-700 shadow-lg">
+                  <CardContent className="pt-6 text-center py-10">
+                    <div className="flex justify-center items-center mb-4">
+                        <svg className="animate-spin h-8 w-8 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </div>
+                    <p className="text-xl font-semibold text-gray-200 animate-pulse">Optimizing Your Portfolio...</p>
+                    <p className="text-gray-400">Please wait while we fetch and analyze market data.</p>
+                  </CardContent>
+                </Card>
+              )}
+              {apiError && (
+                <Card className="border-red-500/50 bg-red-900/30 text-red-200 shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="text-red-400">Optimization Error</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p>{apiError}</p>
+                    <Button variant="outline" onClick={() => setApiError(null)} className="mt-4 border-red-400 text-red-300 hover:bg-red-800">
+                        Dismiss
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {showResults && globalPortfolioData && portfolioData && (
+                <div key={resultsKey} className="space-y-6 mt-8">
+                  <OverallRequestSummaryCard summary={portfolioData.overall_request_summary} />
+                  <RankedAssetsSummaryCard assets={globalPortfolioData.data.ranked_assets_summary} chainName={globalPortfolioData.chain_name} />
+                  <OptimizedPortfolioDetailsCard details={globalPortfolioData.data.optimized_portfolio_details} chainName={globalPortfolioData.chain_name} />
+                  <MVOInputsSummaryCard summary={globalPortfolioData.data.mvo_inputs_summary} chainName={globalPortfolioData.chain_name} />
+                
+                  {/* Placeholder for Individual Asset Details - More detailed UI */}
+                  <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-800 bg-slate-800/50 border-slate-700">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
+                        <Database className="h-6 w-6 text-teal-400" />
+                        Individual Asset Deep Dive (Placeholder)
+                        </CardTitle>
+                      <CardDescription className="text-gray-400">Explore detailed analytics for assets in your optimized portfolio, powered by MongoDB data.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="min-h-[150px] flex items-center justify-center">
+                      <p className="text-gray-500 italic">In-depth asset charts (OHLC, forecasts), previous performance, and comparative analytics will appear here.</p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Placeholder for Benchmark Comparison - More detailed UI */}
+                  <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-1000 bg-slate-800/50 border-slate-700">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
+                        <Activity className="h-6 w-6 text-cyan-400" />
+                        Performance vs. Benchmarks (Placeholder)
+                        </CardTitle>
+                      <CardDescription className="text-gray-400">Track your portfolio's performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
+                    </CardHeader>
+                    <CardContent className="min-h-[150px] flex items-center justify-center">
+                      <p className="text-gray-500 italic">Comparative performance charts and detailed metrics will be displayed here.</p>
+                    </CardContent>
+                  </Card>
                 </div>
-                <div>
-                  <p className="text-sm text-gray-600 font-medium">Wallet Status</p>
-                  <p className="text-2xl font-bold text-gray-900">Connected</p>
-                </div>
-              </div>
-            </div>
+              )}
 
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-6 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                  <TrendingUp className="h-6 w-6 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600 font-medium">Portfolio Value</p>
-                  <p className="text-2xl font-bold text-gray-900">$0.00</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-6 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
-                  <Activity className="h-6 w-6 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600 font-medium">Transactions</p>
-                  <p className="text-2xl font-bold text-gray-900">0</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Resources Grid */}
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-8 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300 group">
-              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Shield className="h-6 w-6 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4 text-gray-900">RainbowKit Documentation</h3>
-              <p className="text-gray-600 mb-6 leading-relaxed">
-                Learn how to customize your wallet connection flow and integrate with different wallets.
-              </p>
-              <Button variant="outline" asChild className="w-full sm:w-auto">
-                <a href="https://rainbowkit.com" target="_blank" rel="noopener noreferrer">
-                  View Docs <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-8 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300 group">
-              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Zap className="h-6 w-6 text-green-600" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4 text-gray-900">wagmi Documentation</h3>
-              <p className="text-gray-600 mb-6 leading-relaxed">
-                Discover powerful React hooks for Ethereum that make interacting with the blockchain simple.
-              </p>
-              <Button variant="outline" asChild className="w-full sm:w-auto">
-                <a href="https://wagmi.sh" target="_blank" rel="noopener noreferrer">
-                  Explore wagmi <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-8 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300 group">
-              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Activity className="h-6 w-6 text-purple-600" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4 text-gray-900">RainbowKit Examples</h3>
-              <p className="text-gray-600 mb-6 leading-relaxed">
-                Discover boilerplate example RainbowKit projects to accelerate your development.
-              </p>
-              <Button variant="outline" asChild className="w-full sm:w-auto">
-                <a href="https://github.com/rainbow-me/rainbowkit/tree/main/examples" target="_blank" rel="noopener noreferrer">
-                  View Examples <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-8 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300 group">
-              <div className="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Shield className="h-6 w-6 text-yellow-600" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4 text-gray-900">Next.js Documentation</h3>
-              <p className="text-gray-600 mb-6 leading-relaxed">
-                Find in-depth information about Next.js features and API for building modern web apps.
-              </p>
-              <Button variant="outline" asChild className="w-full sm:w-auto">
-                <a href="https://nextjs.org/docs" target="_blank" rel="noopener noreferrer">
-                  Learn Next.js <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur-sm rounded-xl p-8 shadow-lg border border-white/30 hover:shadow-xl transition-all duration-300 group">
-              <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <TrendingUp className="h-6 w-6 text-red-600" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4 text-gray-900">Next.js Examples</h3>
-              <p className="text-gray-600 mb-6 leading-relaxed">
-                Discover and deploy boilerplate example Next.js projects for various use cases.
-              </p>
-              <Button variant="outline" asChild className="w-full sm:w-auto">
-                <a href="https://github.com/vercel/next.js/tree/canary/examples" target="_blank" rel="noopener noreferrer">
-                  Browse Examples <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-
-            <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl p-8 text-white">
-              <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center mb-6 hover:scale-110 transition-transform">
-                <Zap className="h-6 w-6 text-white" />
-              </div>
-              <h3 className="text-xl font-semibold mb-4">Deploy Your App</h3>
-              <p className="text-white/90 mb-6 leading-relaxed">
-                Instantly deploy your Next.js site to a public URL with Vercel for seamless hosting.
-              </p>
-              <Button variant="secondary" asChild className="w-full sm:w-auto">
-                <a href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app" target="_blank" rel="noopener noreferrer">
-                  Deploy Now <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-              </Button>
-            </div>
-          </div>
+              {/* Legacy Portfolio Management - consider how/if this fits */}
+              {!isLoading && !showResults && portfolios.length > 0 && (
+                 <Card className="mt-10 bg-slate-800/50 border-slate-700 shadow-lg">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
+                            <PieChartIcon className="h-6 w-6 text-indigo-400"/>
+                            Existing Portfolios
+                        </CardTitle>
+                        <CardDescription className="text-gray-400">
+                            Manage your previously created portfolios or create a new one.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-4">
+                            <div className="flex items-center gap-3">
+                                <h2 className="text-2xl font-bold text-gray-100">
+                                    {activePortfolio?.name || 'Select Portfolio'}
+                                </h2>
+                                {activePortfolio?.description && (
+                                <p className="text-gray-400 text-sm">{activePortfolio.description}</p>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {portfolios.length > 1 && (
+                                    <Select onValueChange={setActivePortfolio} value={activePortfolioId || ''}>
+                                        <SelectTrigger className="w-[180px] bg-slate-700 border-slate-600 text-gray-200">
+                                            <SelectValue placeholder="Switch Portfolio" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-slate-800 border-slate-700 text-gray-200">
+                                            {portfolios.map((portfolio) => (
+                                                <SelectItem key={portfolio.id} value={portfolio.id} className="hover:bg-slate-700 focus:bg-slate-700">
+                                                {portfolio.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                )}
+                                <CreatePortfolioDialog /> { /* Ensure this dialog is styled for dark mode if not already */}
+                            </div>
+                        </div>
+                        {activePortfolio ? (
+                            <PortfolioOverview /> // This component might also need dark mode styling
+                        ) : (
+                        <div className="text-center py-10 text-gray-500">
+                            <p>Select a portfolio to view its overview, or create a new one.</p>
+                        </div>
+                        )}
+                    </CardContent>
+                 </Card>
+              )}
+               {portfolios.length === 0 && !isLoading && !showResults && isConnected && (
+                 <Card className="text-center py-12 sm:py-16 bg-slate-800/50 border-slate-700 shadow-xl">
+                    <CardHeader>
+                        <Briefcase className="h-12 w-12 mx-auto mb-5 text-purple-400" />
+                        <CardTitle className="text-2xl font-bold text-white mb-2">Create Your First Portfolio</CardTitle>
+                        <CardDescription className="text-md text-gray-400 mb-6 max-w-sm mx-auto">
+                            It looks like you don't have any portfolios yet. Get started by creating one!
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <CreatePortfolioDialog />
+                    </CardContent>
+                  </Card>
+               )}
+            </>
+          )}
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="px-6 py-12 border-t border-gray-200 bg-white/50 backdrop-blur-sm mt-12">
+      <footer className="px-6 py-10 border-t border-gray-700 bg-slate-900/80 mt-12">
         <div className="max-w-7xl mx-auto text-center">
-          <p className="text-gray-600">
-            Made with ❤️ by your frens at 🌈
+          <p className="text-gray-400 text-sm">
+            AlphaScan DeFi Portfolio Optimizer | Harnessing data for smarter investments ⛓️
           </p>
         </div>
       </footer>
