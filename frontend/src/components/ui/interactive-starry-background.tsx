@@ -100,8 +100,8 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
   explosionParticleSpeed = 1.5,
   explosionParticleDuration = 70,
   cryptoLogoPaths = ['/logos/btc.png', '/logos/eth.png', '/logos/sol.png'],
-  planetCount = DEFAULT_PLANET_COUNT, // Use new constant
-  scrollPanSensitivity = 0.1, // Default value for scroll sensitivity
+  planetCount = DEFAULT_PLANET_COUNT,
+  scrollPanSensitivity = 0.1,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const starsRef = useRef<Star[]>([]);
@@ -317,7 +317,7 @@ const InteractiveStarryBackground: React.FC<InteractiveStarryBackgroundProps> = 
       starsRef.current.forEach(star => {
         ctx.beginPath();
         ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-        ctx.fillStyle = starColor.replace(/,\s*([\d.]+)\)/, `, ${star.opacity})`);
+        ctx.fillStyle = starColor.replace(/,s*([\d.]+)\)/, `, ${star.opacity})`);
         ctx.fill();
       });
 
