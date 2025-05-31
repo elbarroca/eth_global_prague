@@ -229,7 +229,7 @@ const Dashboard: NextPage = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 text-gray-100">
       <Head>
-        <title>DeFi Portfolio Optimizer - AlphaScan</title>
+        <title>DeFi Portfolio Optimizer - QuantumLeap</title>
         <meta
           content="Optimize your DeFi portfolio across multiple chains with advanced analytics."
           name="description"
@@ -247,7 +247,7 @@ const Dashboard: NextPage = () => {
               </Button>
             </Link>
             <div className="text-xl font-bold text-white">
-              DeFi Optimizer
+              QuantumLeap
             </div>
           </div>
           <ConnectButton />
@@ -448,7 +448,7 @@ const Dashboard: NextPage = () => {
       <footer className="px-6 py-10 border-t border-gray-700 bg-slate-900/80 mt-12">
         <div className="max-w-7xl mx-auto text-center">
           <p className="text-gray-400 text-sm">
-            AlphaScan DeFi Portfolio Optimizer | Harnessing data for smarter investments ⛓️
+            QuantumLeap DeFi Portfolio Optimizer | Harnessing data for smarter investments ⛓️
           </p>
         </div>
       </footer>
