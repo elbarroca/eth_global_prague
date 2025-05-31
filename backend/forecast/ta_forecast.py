@@ -39,9 +39,10 @@ def generate_ta_signals(
     """
     Generates essential TA-based signals from OHLCV data using TA-Lib.
     Focuses on the most reliable and actionable signals.
+    Requires minimum 50 data points for robust signal generation.
     """
     signals: List[Signal] = []
-    min_data_points = 30
+    min_data_points = 50  # Increased from 30 to 50 for better reliability
 
     # Enhanced validation
     if ohlcv_df.empty or len(ohlcv_df) < min_data_points:
@@ -79,6 +80,11 @@ def generate_ta_signals(
     df = ohlcv_df.copy()
     df.sort_values(by='timestamp', inplace=True)
 
+    # Additional validation for sufficient data after sorting
+    if len(df) < min_data_points:
+        logging.warning(f"Insufficient data after sorting for {asset_symbol}: {len(df)} < {min_data_points}")
+        return signals
+
     # Validate OHLC relationships
     invalid_ohlc = (
         (df['high'] < df['low']) | 
@@ -102,12 +108,48 @@ def generate_ta_signals(
         close_prices = np.ascontiguousarray(df['close'].values, dtype=np.float64)
         volume = np.ascontiguousarray(df['volume'].values, dtype=np.float64)
         
-        # Final validation of numpy arrays
-        for arr_name, arr in [('open', open_prices), ('high', high_prices), 
-                             ('low', low_prices), ('close', close_prices), ('volume', volume)]:
+        # Validate array lengths are consistent and sufficient
+        array_lengths = [len(arr) for arr in [open_prices, high_prices, low_prices, close_prices, volume]]
+        if not all(length == array_lengths[0] for length in array_lengths):
+            logging.error(f"Inconsistent array lengths for {asset_symbol}: {array_lengths}")
+            return signals
+        
+        if array_lengths[0] < min_data_points:
+            logging.error(f"Array length {array_lengths[0]} insufficient for {asset_symbol}, need {min_data_points}")
+            return signals
+        
+        # Final validation of numpy arrays - handle NaN values more gracefully
+        arrays_info = [('open', open_prices), ('high', high_prices), 
+                      ('low', low_prices), ('close', close_prices), ('volume', volume)]
+        
+        for arr_name, arr in arrays_info:
             if np.isnan(arr).any():
-                logging.error(f"{arr_name} array contains NaN values for {asset_symbol}")
-                return signals
+                nan_count = np.isnan(arr).sum()
+                total_count = len(arr)
+                nan_percentage = nan_count / total_count
+                
+                # If less than 10% NaN, try to interpolate (more strict than before)
+                if nan_percentage < 0.1:
+                    logging.warning(f"{arr_name} array contains {nan_count} NaN values for {asset_symbol}. Attempting interpolation.")
+                    # Simple forward fill and backward fill
+                    arr_series = pd.Series(arr)
+                    arr_series = arr_series.ffill().bfill()
+                    
+                    # Update the array
+                    if arr_name == 'open':
+                        open_prices = arr_series.values
+                    elif arr_name == 'high':
+                        high_prices = arr_series.values
+                    elif arr_name == 'low':
+                        low_prices = arr_series.values
+                    elif arr_name == 'close':
+                        close_prices = arr_series.values
+                    elif arr_name == 'volume':
+                        volume = arr_series.values
+                else:
+                    logging.error(f"{arr_name} array contains too many NaN values ({nan_percentage:.1%}) for {asset_symbol}")
+                    return signals
+                    
             if np.isinf(arr).any():
                 logging.error(f"{arr_name} array contains infinite values for {asset_symbol}")
                 return signals
@@ -185,17 +227,25 @@ def generate_ta_signals(
         rsi = talib.RSI(close_prices, timeperiod=rsi_period)
         if not np.isnan(rsi[-1]):
             latest_rsi_val = float(round(rsi[-1], 2))
-            # Overbought Signal (RSI > 70)
-            if latest_rsi_val > 70:
+            # Overbought Signal (RSI > 70) - made slightly less restrictive
+            if latest_rsi_val > 65:  # Changed from 70 to 65
+                confidence = 0.7 if latest_rsi_val > 70 else 0.6
                 signals.append(create_signal(
-                    "TA_RSI_OVERBOUGHT", 0.7,
-                    {"rsi": latest_rsi_val, "threshold": 70, "price": latest_close_price}
+                    "TA_RSI_OVERBOUGHT", confidence,
+                    {"rsi": latest_rsi_val, "threshold": 65, "price": latest_close_price}
                 ))
-            # Oversold Signal (RSI < 30)
-            elif latest_rsi_val < 30:
+            # Oversold Signal (RSI < 30) - made slightly less restrictive
+            elif latest_rsi_val < 35:  # Changed from 30 to 35
+                confidence = 0.7 if latest_rsi_val < 30 else 0.6
                 signals.append(create_signal(
-                    "TA_RSI_OVERSOLD", 0.7,
-                    {"rsi": latest_rsi_val, "threshold": 30, "price": latest_close_price}
+                    "TA_RSI_OVERSOLD", confidence,
+                    {"rsi": latest_rsi_val, "threshold": 35, "price": latest_close_price}
+                ))
+            # Add neutral zone signals for additional insights
+            elif 45 <= latest_rsi_val <= 55:
+                signals.append(create_signal(
+                    "TA_RSI_NEUTRAL", 0.5,
+                    {"rsi": latest_rsi_val, "price": latest_close_price}
                 ))
     except Exception as e:
         logging.error(f"Error calculating RSI for {asset_symbol}: {e}")
@@ -397,17 +447,92 @@ def generate_ta_signals(
             if not np.isnan(volume_sma[-1]) and volume_sma[-1] > 0:
                 volume_ratio = volume[-1] / volume_sma[-1]
                 
-                # High volume with price movement
+                # High volume with price movement - made less restrictive
                 price_change_pct = (close_prices[-1] - close_prices[-2]) / close_prices[-2] * 100
                 
-                if volume_ratio > 2.0 and abs(price_change_pct) > 2.0:  # High volume with significant price move
+                # Lower thresholds for more signals
+                if volume_ratio > 1.5 and abs(price_change_pct) > 1.0:  # Reduced from 2.0 to 1.5 and 2.0 to 1.0
                     signal_type = "TA_VOLUME_BREAKOUT_BULLISH" if price_change_pct > 0 else "TA_VOLUME_BREAKOUT_BEARISH"
+                    confidence = 0.7 if volume_ratio > 2.0 and abs(price_change_pct) > 2.0 else 0.6
                     signals.append(create_signal(
-                        signal_type, 0.6,
+                        signal_type, confidence,
                         {"volume_ratio": round(volume_ratio, 2), "price_change_pct": round(price_change_pct, 2), "price": latest_close_price}
                     ))
+                
+                # Add volume anomaly signals
+                if volume_ratio > 3.0:  # Very high volume
+                    signals.append(create_signal(
+                        "TA_VOLUME_SPIKE", 0.6,
+                        {"volume_ratio": round(volume_ratio, 2), "price": latest_close_price}
+                    ))
+                elif volume_ratio < 0.3:  # Very low volume
+                    signals.append(create_signal(
+                        "TA_VOLUME_DROUGHT", 0.5,
+                        {"volume_ratio": round(volume_ratio, 2), "price": latest_close_price}
+                    ))
+                
+                # Add volume trend signals
+                if len(volume) >= 40:
+                    volume_sma_short = talib.SMA(volume, timeperiod=10)
+                    if not np.isnan(volume_sma_short[-1]) and volume_sma_short[-1] > 0:
+                        volume_trend_ratio = volume_sma_short[-1] / volume_sma[-1]
+                        if volume_trend_ratio > 1.2:  # Increasing volume trend
+                            signals.append(create_signal(
+                                "TA_VOLUME_TREND_INCREASING", 0.5,
+                                {"volume_trend_ratio": round(volume_trend_ratio, 2), "price": latest_close_price}
+                            ))
+                        elif volume_trend_ratio < 0.8:  # Decreasing volume trend
+                            signals.append(create_signal(
+                                "TA_VOLUME_TREND_DECREASING", 0.5,
+                                {"volume_trend_ratio": round(volume_trend_ratio, 2), "price": latest_close_price}
+                            ))
     except Exception as e:
         logging.error(f"Error calculating Volume analysis for {asset_symbol}: {e}")
 
     logging.info(f"Generated {len(signals)} essential TA signals for {asset_symbol}.")
+    
+    # --- 7. Additional Price Action Signals (if we have few signals so far) ---
+    if len(signals) < 3:  # Add more signals if we don't have many
+        try:
+            # Price momentum signals
+            if len(close_prices) >= 5:
+                price_change_1d = (close_prices[-1] - close_prices[-2]) / close_prices[-2] * 100
+                price_change_3d = (close_prices[-1] - close_prices[-4]) / close_prices[-4] * 100 if len(close_prices) >= 4 else 0
+                
+                # Strong price movements
+                if abs(price_change_1d) > 3.0:
+                    signal_type = "TA_PRICE_STRONG_MOVE_UP" if price_change_1d > 0 else "TA_PRICE_STRONG_MOVE_DOWN"
+                    signals.append(create_signal(
+                        signal_type, 0.6,
+                        {"price_change_1d_pct": round(price_change_1d, 2), "price": latest_close_price}
+                    ))
+                
+                # Momentum consistency
+                if abs(price_change_3d) > 5.0 and np.sign(price_change_1d) == np.sign(price_change_3d):
+                    signal_type = "TA_PRICE_MOMENTUM_CONSISTENT_UP" if price_change_3d > 0 else "TA_PRICE_MOMENTUM_CONSISTENT_DOWN"
+                    signals.append(create_signal(
+                        signal_type, 0.55,
+                        {"price_change_3d_pct": round(price_change_3d, 2), "price": latest_close_price}
+                    ))
+            
+            # Simple trend signals based on recent highs/lows
+            if len(close_prices) >= 10:
+                recent_high = np.max(close_prices[-10:])
+                recent_low = np.min(close_prices[-10:])
+                current_position = (latest_close_price - recent_low) / (recent_high - recent_low) if recent_high != recent_low else 0.5
+                
+                if current_position > 0.8:  # Near recent high
+                    signals.append(create_signal(
+                        "TA_PRICE_NEAR_RECENT_HIGH", 0.5,
+                        {"position_in_range": round(current_position, 2), "recent_high": recent_high, "price": latest_close_price}
+                    ))
+                elif current_position < 0.2:  # Near recent low
+                    signals.append(create_signal(
+                        "TA_PRICE_NEAR_RECENT_LOW", 0.5,
+                        {"position_in_range": round(current_position, 2), "recent_low": recent_low, "price": latest_close_price}
+                    ))
+                    
+        except Exception as e:
+            logging.error(f"Error calculating additional price action signals for {asset_symbol}: {e}")
+    
     return signals

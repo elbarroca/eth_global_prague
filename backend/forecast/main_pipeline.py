@@ -10,9 +10,7 @@ import asyncio # Added asyncio
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models import Signal, OHLCVDataPoint
-# Import MongoDB service functions
 from services.mongo_service import connect_to_mongo, close_mongo_connection, get_ohlcv_from_db
-# Import configs for stablecoin filtering
 from configs import COMMON_STABLECOIN_SYMBOLS
 
 # Import the forecast functions with correct relative paths
@@ -239,16 +237,6 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
             period_seconds=period_seconds,
             timeframe=timeframe
         )
-
-        if not raw_ohlcv_data:
-            logger.warning(f"No OHLCV data found or fetched for {asset_symbol}. Using simulated data for testing.")
-            # Generate simulated OHLCV data for testing
-            simulated_data = generate_simulated_ohlcv_for_asset(asset_symbol, days=200)
-            if simulated_data:
-                raw_ohlcv_data = simulated_data
-            else:
-                logger.warning(f"Failed to generate simulated data for {asset_symbol}. Skipping.")
-                continue
         
         ohlcv_df = pd.DataFrame(raw_ohlcv_data)
         if ohlcv_df.empty:
@@ -269,8 +257,9 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         
         ohlcv_data_dict[asset_symbol] = ohlcv_df # Store for MVO input calculation
 
-        if ohlcv_df.empty or len(ohlcv_df) < 30: # Min data for most indicators
-            logger.warning(f"Skipping {asset_symbol} due to insufficient OHLCV data ({len(ohlcv_df)} rows after fetch/conversion).")
+        min_data_points = 50  # Updated to match forecast modules requirement
+        if ohlcv_df.empty or len(ohlcv_df) < min_data_points:
+            logger.warning(f"Skipping {asset_symbol} due to insufficient OHLCV data ({len(ohlcv_df)} rows after fetch/conversion). Required at least {min_data_points}.")
             continue
 
         # Ensure 'timestamp' is int (seconds) and other columns are float
@@ -343,7 +332,6 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
     # Use all available OHLCV data for MVO
     portfolio_ohlcv_data = ohlcv_data_dict
 
-
     # 4. Calculate MVO inputs
     logger.info("\nCalculating MVO inputs for selected assets...")
     mvo_inputs = calculate_mvo_inputs(portfolio_ohlcv_data, annualization_factor=annualization_factor)
@@ -355,7 +343,6 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         logger.error("Failed to calculate MVO inputs. Expected returns or covariance matrix is empty.")
         return {"error": "MVO input calculation failed", "ranked_assets": ranked_assets_df.to_dict(orient='records')}
         
-
     # 5. Optimize portfolio
     logger.info(f"\nOptimizing portfolio with objective: {mvo_objective}...")
     optimized_portfolio = optimize_portfolio_mvo(
@@ -408,167 +395,3 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
             }
         }
 
-# --- Example Usage (Simulated Data) ---
-def generate_simulated_ohlcv(days=200, num_assets=10) -> Dict[str, pd.DataFrame]:
-    """Generates simulated OHLCV data for multiple assets."""
-    all_data = {}
-    base_start_price = 100
-    for i in range(num_assets):
-        asset_symbol = f"ASSET_{chr(65+i)}" # ASSET_A, ASSET_B, ...
-        dates = pd.to_datetime([pd.Timestamp.now().normalize() - pd.Timedelta(days=x) for x in range(days)][::-1])
-        
-        # Simulate price data with some trend and noise
-        price_changes = np.random.normal(loc=np.random.uniform(-0.001, 0.002), scale=np.random.uniform(0.01, 0.03), size=days)
-        close_prices = base_start_price * (1 + price_changes).cumprod()
-        
-        # Ensure prices are positive
-        close_prices = np.maximum(close_prices, 0.01)
-
-        open_prices = close_prices * (1 + np.random.normal(loc=0, scale=0.005, size=days))
-        high_prices = np.maximum(close_prices, open_prices) * (1 + np.random.uniform(0, 0.02, size=days))
-        low_prices = np.minimum(close_prices, open_prices) * (1 - np.random.uniform(0, 0.02, size=days))
-        volume = np.random.poisson(lam=100000, size=days) * np.random.uniform(0.5, 1.5, size=days)
-
-        # Ensure OHLC consistency
-        high_prices = np.maximum.reduce([open_prices, high_prices, low_prices, close_prices])
-        low_prices = np.minimum.reduce([open_prices, high_prices, low_prices, close_prices])
-        
-        df = pd.DataFrame({
-            'timestamp': dates.astype(np.int64) // 10**9, # Convert to seconds
-            'open': open_prices,
-            'high': high_prices,
-            'low': low_prices,
-            'close': close_prices,
-            'volume': volume
-        })
-        df.set_index(pd.DatetimeIndex(dates), inplace=True) # Keep DatetimeIndex for potential use elsewhere
-        all_data[asset_symbol] = df
-    return all_data
-
-def generate_simulated_ohlcv_for_asset(asset_symbol: str, days: int = 200) -> List[Dict[str, Any]]:
-    """Generates simulated OHLCV data for a single asset in the format expected by the pipeline."""
-    try:
-        import pandas as pd
-        import numpy as np
-        from datetime import datetime, timedelta
-        
-        base_start_price = 100 if "ETH" in asset_symbol.upper() else 1
-        if "ETH" in asset_symbol.upper():
-            base_start_price = 2000  # More realistic for ETH
-        
-        # Create timestamps going backwards from now
-        end_date = datetime.now()
-        dates = [end_date - timedelta(days=x) for x in range(days)][::-1]
-        
-        # Simulate price data with some trend and noise
-        price_changes = np.random.normal(loc=np.random.uniform(-0.001, 0.002), scale=np.random.uniform(0.015, 0.025), size=days)
-        close_prices = base_start_price * (1 + price_changes).cumprod()
-        
-        # Ensure prices are positive
-        close_prices = np.maximum(close_prices, 0.01)
-
-        open_prices = close_prices * (1 + np.random.normal(loc=0, scale=0.005, size=days))
-        high_prices = np.maximum(close_prices, open_prices) * (1 + np.random.uniform(0, 0.02, size=days))
-        low_prices = np.minimum(close_prices, open_prices) * (1 - np.random.uniform(0, 0.02, size=days))
-        volume = np.random.poisson(lam=100000, size=days) * np.random.uniform(0.5, 1.5, size=days)
-
-        # Ensure OHLC consistency
-        high_prices = np.maximum.reduce([open_prices, high_prices, low_prices, close_prices])
-        low_prices = np.minimum.reduce([open_prices, high_prices, low_prices, close_prices])
-        
-        # Convert to the format expected by the pipeline (list of dicts with 'time' key)
-        ohlcv_data = []
-        for i in range(days):
-            ohlcv_data.append({
-                'time': int(dates[i].timestamp()),
-                'open': float(open_prices[i]),
-                'high': float(high_prices[i]),
-                'low': float(low_prices[i]),
-                'close': float(close_prices[i]),
-                'volume': float(volume[i])
-            })
-        
-        logger.info(f"Generated {len(ohlcv_data)} simulated OHLCV candles for {asset_symbol}")
-        return ohlcv_data
-        
-    except Exception as e:
-        logger.error(f"Error generating simulated OHLCV data for {asset_symbol}: {e}")
-        return []
-
-async def main(): # New async main function for example usage
-    logger.info("🚀 Starting main forecast to portfolio pipeline with data from MongoDB...")
-    
-    await connect_to_mongo()
-
-    # Example asset identifiers (replace with actual desired assets)
-    # Based on the image:
-    # base_token_address: "0xb8c77482e45f1f44de1745f52c74426c631bdd52" (e.g. WETH on some chain)
-    # quote_token_address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" (e.g. USDC on some chain)
-    # period_seconds : 86400 (daily)
-    # chain_id : 1
-    
-    # Import the correct addresses from configs
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from configs import WETH_ETHEREUM_ADDRESS, USDC_ADDRESSES, ETHEREUM_CHAIN_ID
-    
-    example_assets = [
-        {
-            "asset_symbol": "WETH-USDC", # User-defined symbol for this pair
-            "base_token_address": WETH_ETHEREUM_ADDRESS,
-            "quote_token_address": USDC_ADDRESSES[ETHEREUM_CHAIN_ID]
-        },
-        # Add a few more simulated assets for portfolio testing
-        {
-            "asset_symbol": "BTC-USDC",
-            "base_token_address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",  # WBTC
-            "quote_token_address": USDC_ADDRESSES[ETHEREUM_CHAIN_ID]
-        },
-        {
-            "asset_symbol": "LINK-USDC",
-            "base_token_address": "0x514910771AF9Ca656af840dff83E8264EcF986CA",  # LINK
-            "quote_token_address": USDC_ADDRESSES[ETHEREUM_CHAIN_ID]
-        },
-    ]
-    
-    chain_id_to_query = 1
-    # period_seconds 86400 corresponds to 'daily' timeframe. Adjust if using other periods.
-    period_seconds_to_query = 86400 
-    timeframe_to_query = "daily" # Ensure this matches what's stored in DB for this period_seconds
-                                 # And matches what `store_ohlcv_in_db` uses.
-    
-    pipeline_result = await run_forecast_to_portfolio_pipeline(
-        asset_identifiers=example_assets,
-        chain_id=chain_id_to_query,
-        period_seconds=period_seconds_to_query,
-        timeframe=timeframe_to_query,
-        num_top_assets_for_portfolio=min(3, len(example_assets)), # Adjust N based on available assets
-        mvo_objective="maximize_sharpe",
-        annualization_factor=365 if timeframe_to_query == "daily" else (365 * 24 if timeframe_to_query == "hourly" else 252) # Adjust based on timeframe
-    )
-
-    if pipeline_result:
-        if "error" in pipeline_result:
-            logger.error(f"\nPipeline completed with an error: {pipeline_result['error']}")
-            if "ranked_assets" in pipeline_result and isinstance(pipeline_result["ranked_assets"], list) and pipeline_result["ranked_assets"]:
-                 logger.info("Asset Ranking was performed:")
-                 try:
-                     logger.info(pd.DataFrame(pipeline_result["ranked_assets"]).to_string())
-                 except Exception as e_df:
-                     logger.error(f"Could not print ranked_assets as DataFrame: {e_df}")
-                     logger.info(str(pipeline_result["ranked_assets"]))
-
-        else:
-            logger.info("\n✅ Pipeline completed successfully!")
-            # Detailed output is already logged within the function
-            # Example:
-            if pipeline_result.get("optimized_portfolio"):
-                logger.info("\nFinal Portfolio Weights:")
-                for asset, weight in pipeline_result.get("optimized_portfolio", {}).get("weights", {}).items():
-                    logger.info(f"  {asset}: {weight:.4f}")
-            else:
-                logger.info("Portfolio optimization was not reached or did not return weights.")
-    else:
-        logger.error("\n❌ Pipeline execution failed to produce a result.")
-
-    await close_mongo_connection()
-    logger.info("Pipeline finished.")

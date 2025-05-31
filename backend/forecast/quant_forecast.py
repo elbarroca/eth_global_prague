@@ -1,12 +1,11 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional, Literal, Union, Tuple
+from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field
-# from scipy.stats import norm # Not strictly needed for historical VaR/CVaR as implemented
 import logging
-import time
-from models import Signal, OHLCVDataPoint # Assuming Signal model and OHLCVDataPoint
+from models import Signal # Assuming Signal model and OHLCVDataPoint
 from arch import arch_model
+import time
 
 # Fourier Signal Configuration
 class FourierSignalConfig(BaseModel):
@@ -43,14 +42,32 @@ def convert_numpy_types(obj):
 def calculate_log_returns(series: pd.Series) -> pd.Series:
     """Calculates log returns, handling potential zeros or negative prices if any."""
     assert isinstance(series, pd.Series), "Input 'series' must be a pandas Series."
-    series_positive = series[series > 0]
-    if series_positive.empty:
-        logging.warning("Log returns calculation: No positive prices found in series.")
-        return pd.Series(dtype=float)
-    if len(series_positive) < 2:
-        logging.warning("Log returns calculation: Not enough positive prices (need at least 2) to calculate returns.")
-        return pd.Series(dtype=float)
-    return np.log(series_positive / series_positive.shift(1))
+    
+    if len(series) < 2:
+        logging.warning("Log returns calculation: Not enough data (need at least 2) to calculate returns.")
+        return pd.Series(dtype=float, index=series.index)
+    
+    # Handle non-positive prices by forward-filling or interpolation
+    series_clean = series.copy()
+    
+    # Replace non-positive values with NaN first
+    series_clean[series_clean <= 0] = np.nan
+    
+    # Forward fill to handle isolated non-positive values
+    series_clean = series_clean.ffill()
+    
+    # If still have NaN at the beginning, backward fill
+    series_clean = series_clean.bfill()
+    
+    # Check if we still have non-positive values after cleaning
+    if (series_clean <= 0).any() or series_clean.isna().any():
+        logging.warning("Log returns calculation: Unable to clean all non-positive/NaN prices.")
+        # Return NaN series with proper index
+        return pd.Series(np.nan, index=series.index, dtype=float)
+    
+    # Calculate log returns maintaining the original index
+    log_returns = np.log(series_clean / series_clean.shift(1))
+    return log_returns
 
 def calculate_simple_returns(series: pd.Series) -> pd.Series:
     """Calculates simple percentage returns."""
@@ -107,8 +124,16 @@ def fourier_detrend(
             return None
             
         price_series_cleaned = price_series.dropna()
-        if len(price_series_cleaned) < 20:  # Minimum for FFT
-            logging.warning(f"Insufficient data points ({len(price_series_cleaned)}) for Fourier detrending. Min 20 required.")
+        if len(price_series_cleaned) < 50:  # Increased from 20 to 50 for better reliability
+            logging.warning(f"Insufficient data points ({len(price_series_cleaned)}) for Fourier detrending. Min 50 required.")
+            return None
+
+        # Additional validation for price data
+        if (price_series_cleaned <= 0).any():
+            logging.warning("Price series contains non-positive values, which may affect Fourier analysis.")
+        
+        if not np.isfinite(price_series_cleaned).all():
+            logging.error("Price series contains infinite or NaN values after cleaning.")
             return None
 
         # Perform FFT detrending
@@ -126,6 +151,12 @@ def fourier_detrend(
 
         # Inverse FFT to get detrended signal
         detrended_signal = np.fft.ifft(fft_coeffs_detrended).real
+        
+        # Validate the detrended signal
+        if not np.isfinite(detrended_signal).all():
+            logging.error("Fourier detrending produced invalid (infinite/NaN) values.")
+            return None
+        
         detrended_series = pd.Series(detrended_signal, index=price_series_cleaned.index, name="DetrendedPrice")
 
         # Reindex to match original series (fills NaN where original had NaN)
@@ -187,29 +218,36 @@ def generate_fourier_signals_analysis(
             current_detrended = detrended_series.iloc[-1] if not detrended_series.empty else np.nan
             current_upper = upper_band.iloc[-1] if not upper_band.empty else np.nan
             current_lower = lower_band.iloc[-1] if not lower_band.empty else np.nan
+            current_local_mean = local_mean_sma.iloc[-1] if not local_mean_sma.empty else np.nan
             
-            # Previous values for trend detection
+            # Previous values for trend detection (ensure we have enough data)
             prev_detrended = detrended_series.iloc[-2] if len(detrended_series) > 1 else np.nan
             prev_upper = upper_band.iloc[-2] if len(upper_band) > 1 else np.nan
             prev_lower = lower_band.iloc[-2] if len(lower_band) > 1 else np.nan
             
-            # Signal logic: crossing bands
+            # Signal logic: crossing bands with improved validation
             fourier_signal = "Hold"
             signal_strength = 0.0
             
-            if (pd.notna(prev_detrended) and pd.notna(prev_lower) and 
-                pd.notna(current_detrended) and pd.notna(current_lower)):
-                # Buy signal: crossed above lower band
+            # Ensure all required values are valid before generating signals
+            all_current_valid = all(pd.notna([current_detrended, current_upper, current_lower, current_local_mean]))
+            all_prev_valid = all(pd.notna([prev_detrended, prev_upper, prev_lower]))
+            
+            if all_current_valid and all_prev_valid:
+                # Buy signal: crossed above lower band (mean reversion from oversold)
                 if prev_detrended <= prev_lower and current_detrended > current_lower:
                     fourier_signal = "Buy"
                     signal_strength = min(abs(current_detrended - current_lower) / global_std_dev, 1.0)
                     
-            if (pd.notna(prev_detrended) and pd.notna(prev_upper) and 
-                pd.notna(current_detrended) and pd.notna(current_upper)):
-                # Sell signal: crossed below upper band
-                if prev_detrended >= prev_upper and current_detrended < current_upper:
+                # Sell signal: crossed below upper band (mean reversion from overbought)
+                elif prev_detrended >= prev_upper and current_detrended < current_upper:
                     fourier_signal = "Sell"
                     signal_strength = min(abs(current_detrended - current_upper) / global_std_dev, 1.0)
+            
+            # Calculate z-score for additional analysis
+            detrended_z_score = np.nan
+            if pd.notna(current_detrended) and pd.notna(current_local_mean) and global_std_dev > 1e-8:
+                detrended_z_score = (current_detrended - current_local_mean) / global_std_dev
             
             return {
                 "fourier_signal": fourier_signal,
@@ -218,7 +256,7 @@ def generate_fourier_signals_analysis(
                 "upper_band": current_upper,
                 "lower_band": current_lower,
                 "global_std_dev": global_std_dev,
-                "detrended_z_score": (current_detrended - local_mean_sma.iloc[-1]) / global_std_dev if pd.notna(local_mean_sma.iloc[-1]) else np.nan
+                "detrended_z_score": detrended_z_score
             }
         else:
             logging.warning("Skipping Fourier signal generation due to invalid global standard deviation.")
@@ -244,39 +282,105 @@ def fit_garch_and_forecast_volatility(
     assert isinstance(q, int) and q >= 0, "GARCH order q must be non-negative."
     assert isinstance(trading_periods_per_year, int) and trading_periods_per_year > 0
 
-    min_data_points = p + q + 20 # Increased minimum for better stability
+    min_data_points = max(p + q + 20, 50) # Increased minimum for better stability
     if returns_series.dropna().empty or len(returns_series.dropna()) < min_data_points:
         logging.warning(f"Not enough data points ({len(returns_series.dropna())}) for GARCH({p},{q}) model. Required {min_data_points}.")
         return None
 
-    scaled_returns = returns_series.dropna() * 100 # Scale for GARCH fitting
-    if scaled_returns.empty:
-        logging.warning("Scaled returns are empty after dropna for GARCH.")
+    # Clean returns data
+    clean_returns = returns_series.dropna()
+    if clean_returns.empty:
+        logging.warning("No valid returns data after cleaning for GARCH.")
         return None
 
+    # Check for extreme values that could cause numerical issues
+    returns_std = clean_returns.std()
+    if pd.isna(returns_std) or returns_std < 1e-8:
+        logging.warning(f"Returns standard deviation too small or NaN: {returns_std}")
+        return None
+
+    # Remove extreme outliers that can cause convergence issues
+    q99 = clean_returns.quantile(0.99)
+    q01 = clean_returns.quantile(0.01)
+    clean_returns = clean_returns.clip(lower=q01, upper=q99)
+
+    # Scale returns to percentage for better numerical stability (multiply by 100)
+    scaled_returns = clean_returns * 100
+    
+    # Try different GARCH configurations if the first one fails
+    garch_configs = [
+        {'p': p, 'q': q, 'mean': 'Constant'},
+        {'p': 1, 'q': 1, 'mean': 'Zero'},  # Fallback to simpler model
+        {'p': 1, 'q': 1, 'mean': 'Constant'},  # Another fallback
+    ]
+    
+    for config in garch_configs:
+        try:
+            # Use specified mean model with GARCH volatility
+            am = arch_model(scaled_returns, vol='Garch', 
+                          p=config['p'], o=0, q=config['q'], 
+                          dist='Normal', mean=config['mean'])
+            
+            # Fit with better convergence options and multiple starting values
+            res = am.fit(update_freq=0, disp='off', 
+                        options={'maxiter': 2000, 'ftol': 1e-6},
+                        starting_values=None)
+            
+            # Check if model converged
+            if not res.convergence_flag:
+                logging.debug(f"GARCH({config['p']},{config['q']}) with {config['mean']} mean did not converge")
+                continue
+
+            # Forecast next period variance
+            forecast = res.forecast(horizon=1, reindex=False)
+            cond_variance_forecast_scaled = forecast.variance.iloc[0, 0]
+
+            # Validate forecast
+            if pd.isna(cond_variance_forecast_scaled) or cond_variance_forecast_scaled <= 0:
+                logging.debug(f"GARCH forecast resulted in invalid variance: {cond_variance_forecast_scaled}")
+                continue
+
+            # Convert back to original scale (divide by 100^2 for variance, then sqrt and divide by 100 for volatility)
+            cond_volatility_daily = np.sqrt(cond_variance_forecast_scaled) / 100.0
+            cond_volatility_annualized = cond_volatility_daily * np.sqrt(trading_periods_per_year)
+
+            # Validate final result
+            if not np.isfinite(cond_volatility_annualized) or cond_volatility_annualized <= 0:
+                logging.debug(f"Invalid annualized volatility forecast: {cond_volatility_annualized}")
+                continue
+
+            # Success! Return results
+            return {
+                "conditional_volatility_forecast_annualized": float(cond_volatility_annualized),
+                "aic": float(res.aic),
+                "bic": float(res.bic),
+                "mu": float(res.params.get('mu', 0.0)),
+                "convergence_flag": res.convergence_flag,
+                "model_config": f"GARCH({config['p']},{config['q']}) with {config['mean']} mean"
+            }
+            
+        except Exception as e:
+            logging.debug(f"GARCH({config['p']},{config['q']}) with {config['mean']} mean failed: {e}")
+            continue
+    
+    # If all configurations failed, try a simple historical volatility as fallback
     try:
-        am = arch_model(scaled_returns, vol='Garch', p=p, o=0, q=q, dist='Normal', mean='Zero')
-        res = am.fit(update_freq=0, disp='off')
-
-        forecast = res.forecast(horizon=1, reindex=False) # reindex=False is often more robust with date indexes
-        cond_variance_forecast_scaled = forecast.variance.iloc[0, 0] # Accessing the first (and only) forecast
-
-        if pd.isna(cond_variance_forecast_scaled) or cond_variance_forecast_scaled <= 0: # Variance must be positive
-            logging.warning(f"GARCH forecast resulted in NaN or non-positive variance: {cond_variance_forecast_scaled}")
-            return None
-
-        cond_volatility_daily = np.sqrt(cond_variance_forecast_scaled) / 100.0
-        cond_volatility_annualized = cond_volatility_daily * np.sqrt(trading_periods_per_year)
-
-        return {
-            "conditional_volatility_forecast_annualized": cond_volatility_annualized,
-            "aic": res.aic,
-            "bic": res.bic,
-            "mu": res.params['mu'] if 'mu' in res.params else 0.0
-        }
+        historical_vol = clean_returns.std() * np.sqrt(trading_periods_per_year)
+        if np.isfinite(historical_vol) and historical_vol > 0:
+            logging.warning("GARCH models failed to converge, using historical volatility as fallback")
+            return {
+                "conditional_volatility_forecast_annualized": float(historical_vol),
+                "aic": np.nan,
+                "bic": np.nan,
+                "mu": float(clean_returns.mean()),
+                "convergence_flag": False,
+                "model_config": "Historical volatility fallback"
+            }
     except Exception as e:
-        logging.error(f"GARCH({p},{q}) model fitting failed: {e}")
-        return None
+        logging.error(f"Even historical volatility fallback failed: {e}")
+    
+    logging.error("All GARCH model configurations and fallbacks failed")
+    return None
 
 # --- VaR and CVaR Calculation ---
 def calculate_historical_var_cvar(
@@ -327,12 +431,42 @@ def generate_quant_advanced_signals(
     assert 'timestamp' in ohlcv_df.columns and 'close' in ohlcv_df.columns, "ohlcv_df must contain 'timestamp' and 'close' columns."
     assert isinstance(trading_periods_per_year, int) and trading_periods_per_year > 0
 
-    if ohlcv_df.empty or len(ohlcv_df) < 30:
-        logging.warning(f"Not enough OHLCV data for Advanced Quant signals on {asset_symbol} (rows: {len(ohlcv_df)}). Required at least 30.")
+    min_data_points = 50  # Increased from 30 to 50 for better reliability and GARCH compatibility
+    if ohlcv_df.empty or len(ohlcv_df) < min_data_points:
+        logging.warning(f"Not enough OHLCV data for Advanced Quant signals on {asset_symbol} (rows: {len(ohlcv_df)}). Required at least {min_data_points}.")
         return signals
+
+    # Enhanced data validation
+    required_cols = ['timestamp', 'open', 'high', 'low', 'close']
+    for col in required_cols:
+        if col not in ohlcv_df.columns:
+            logging.error(f"Required column '{col}' missing in OHLCV data for {asset_symbol}.")
+            return signals
+        
+        # Validate numeric columns
+        if col != 'timestamp':
+            if not pd.api.types.is_numeric_dtype(ohlcv_df[col]):
+                logging.error(f"Column '{col}' is not numeric in OHLCV data for {asset_symbol}.")
+                return signals
+            
+            # Check for infinite values
+            if np.isinf(ohlcv_df[col]).any():
+                logging.error(f"Column '{col}' contains infinite values for {asset_symbol}.")
+                return signals
+            
+            # Check for non-positive prices
+            if (ohlcv_df[col] <= 0).any():
+                logging.error(f"Column '{col}' contains non-positive values for {asset_symbol}.")
+                return signals
 
     df = ohlcv_df.copy()
     df.sort_values(by='timestamp', inplace=True)
+    
+    # Additional validation after sorting
+    if len(df) < min_data_points:
+        logging.warning(f"Insufficient data after sorting for {asset_symbol}: {len(df)} < {min_data_points}")
+        return signals
+    
     # Ensure datetime index for time-series operations and GARCH
     if not isinstance(df.index, pd.DatetimeIndex):
         df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
@@ -340,16 +474,25 @@ def generate_quant_advanced_signals(
         if df.empty:
             logging.error(f"Failed to create valid DatetimeIndex for {asset_symbol}.")
             return signals
-
+        
+        # Validate we still have enough data after datetime conversion
+        if len(df) < min_data_points:
+            logging.warning(f"Insufficient data after datetime conversion for {asset_symbol}: {len(df)} < {min_data_points}")
+            return signals
 
     latest_close = df['close'].iloc[-1] if current_price is None else current_price
-    if pd.isna(latest_close):
-        logging.error(f"Latest close price is NaN for {asset_symbol}. Cannot generate signals.")
+    if pd.isna(latest_close) or not np.isfinite(latest_close) or latest_close <= 0:
+        logging.error(f"Invalid latest close price {latest_close} for {asset_symbol}. Cannot generate signals.")
         return signals
     latest_timestamp_signal = int(time.time())
     
     # Helper function to create signals with proper type conversion
     def create_signal(signal_type: str, confidence: float, details: Dict[str, Any]) -> Signal:
+        # Validate confidence
+        if not (0 <= confidence <= 1):
+            logging.warning(f"Invalid confidence {confidence} for signal {signal_type}. Clamping to [0,1].")
+            confidence = max(0, min(1, confidence))
+        
         return Signal(
             asset_symbol=asset_symbol,
             chain_id=chain_id, 
@@ -360,9 +503,15 @@ def generate_quant_advanced_signals(
             timestamp=latest_timestamp_signal
         )
 
+    # Calculate returns with enhanced validation
     df['log_returns'] = calculate_log_returns(df['close'])
     df['simple_returns'] = calculate_simple_returns(df['close'])
     returns_for_risk_models = df['log_returns'].dropna()
+    
+    # Validate we have sufficient returns data
+    if len(returns_for_risk_models) < min_data_points - 1:  # -1 because returns are one less than prices
+        logging.warning(f"Insufficient returns data for {asset_symbol}: {len(returns_for_risk_models)} < {min_data_points - 1}")
+        return signals
 
     # --- 1. Enhanced Volatility Analysis & Regime Detection ---
     realized_vol_window = 20
@@ -395,7 +544,7 @@ def generate_quant_advanced_signals(
 
     # GARCH Conditional Volatility & Volatility Risk Premium
     garch_results = None
-    if len(returns_for_risk_models) >= 30:
+    if len(returns_for_risk_models) >= 50:  # Ensure we have enough data for GARCH
         garch_results = fit_garch_and_forecast_volatility(
             returns_for_risk_models, p=1, q=1,
             trading_periods_per_year=trading_periods_per_year
@@ -418,16 +567,18 @@ def generate_quant_advanced_signals(
                 {"garch_vol_ann": cond_vol_ann, "realized_vol_ann": latest_realized_vol_ann, "ratio": vol_premium_ratio, "price": latest_close}
             ))
                 elif vol_premium_ratio < 0.67: # GARCH forecast significantly lower (1/1.5)
-                     signals.append(Signal(
-                        asset_symbol=asset_symbol, chain_id=chain_id, token_address=token_address,
-                        signal_type="QUANT_VOL_RISK_PREMIUM_LOW", confidence=0.60, # Market might be complacent
-                        details={"garch_vol_ann": cond_vol_ann, "realized_vol_ann": latest_realized_vol_ann, "ratio": vol_premium_ratio, "price": latest_close},
-                        timestamp=latest_timestamp_signal))
-
+                     signals.append(create_signal(
+                        "QUANT_VOL_RISK_PREMIUM_LOW", 0.60, # Market might be complacent
+                        {"garch_vol_ann": cond_vol_ann, "realized_vol_ann": latest_realized_vol_ann, "ratio": vol_premium_ratio, "price": latest_close}
+                    ))
+        else:
+            logging.debug(f"GARCH model failed to produce valid results for {asset_symbol} with {len(returns_for_risk_models)} data points")
+    else:
+        logging.debug(f"Insufficient data for GARCH model for {asset_symbol}: {len(returns_for_risk_models)} < 50")
 
     # --- 2. VaR/CVaR Risk Signal ---
     returns_for_var_cvar = df['simple_returns'].dropna()
-    if len(returns_for_var_cvar) >= 25:
+    if len(returns_for_var_cvar) >= 30:  # Keep at 30 for VaR as it's less demanding than GARCH
         var_cvar_95 = calculate_historical_var_cvar(returns_for_var_cvar, confidence_level=0.95)
         if var_cvar_95:
             cvar_95_value = var_cvar_95.get("cvar_95")
@@ -440,6 +591,10 @@ def generate_quant_advanced_signals(
                         "var_95_daily_loss_pct": var_cvar_95.get("var_95", 0) * 100,
                         "threshold_cvar_pct": cvar_threshold_daily_loss_pct * 100, "price": latest_close}
             ))
+        else:
+            logging.debug(f"VaR/CVaR calculation failed for {asset_symbol} with {len(returns_for_var_cvar)} data points")
+    else:
+        logging.debug(f"Insufficient data for VaR/CVaR calculation for {asset_symbol}: {len(returns_for_var_cvar)} < 30")
 
     # --- 3. Mean Reversion Potential (Z-Score) ---
     price_sma_window = 20
@@ -465,14 +620,14 @@ def generate_quant_advanced_signals(
             ))
 
     # --- 4. Momentum Analysis - Advanced ---
-    if len(returns_for_risk_models) >= 30:
+    if len(returns_for_risk_models) >= 50:  # Increased from 30 to 50 for better reliability
         # Rolling Sharpe Ratio
         rolling_window = 20
         rolling_returns = returns_for_risk_models.rolling(window=rolling_window)
         rolling_sharpe = rolling_returns.mean() / rolling_returns.std() * np.sqrt(trading_periods_per_year)
         current_sharpe = rolling_sharpe.iloc[-1]
         
-        if not pd.isna(current_sharpe):
+        if not pd.isna(current_sharpe) and np.isfinite(current_sharpe):
             # Strong positive momentum
             if current_sharpe > 1.5:
                 signals.append(create_signal(
@@ -486,8 +641,8 @@ def generate_quant_advanced_signals(
                     {"sharpe_ratio": current_sharpe, "threshold": -1.0, "price": latest_close}
                 ))
         
-        # RSI Divergence Detection
-        if len(df) >= 50:
+        # RSI Divergence Detection - only if we have sufficient data
+        if len(df) >= 60:  # Increased requirement for divergence analysis
             rsi_window = 14
             price_highs = df['high'].rolling(window=rsi_window).max()
             price_lows = df['low'].rolling(window=rsi_window).min()
@@ -498,26 +653,32 @@ def generate_quant_advanced_signals(
             losses = -price_change.where(price_change < 0, 0)
             avg_gains = gains.rolling(window=rsi_window).mean()
             avg_losses = losses.rolling(window=rsi_window).mean()
-            rs = avg_gains / avg_losses
+            
+            # Avoid division by zero
+            rs = avg_gains / avg_losses.replace(0, np.nan)
             rsi = 100 - (100 / (1 + rs))
             
             # Look for price making new highs while RSI doesn't (bearish divergence)
-            recent_price_high = df['high'].iloc[-5:].max()
-            recent_rsi_high = rsi.iloc[-5:].max()
-            prev_price_high = df['high'].iloc[-20:-5].max()
-            prev_rsi_high = rsi.iloc[-20:-5].max()
-            
-            if (recent_price_high > prev_price_high and 
-                recent_rsi_high < prev_rsi_high and 
-                not pd.isna(recent_rsi_high) and not pd.isna(prev_rsi_high)):
-                signals.append(create_signal(
-                    "QUANT_MOMENTUM_BEARISH_DIVERGENCE", 0.65,
-                    {"recent_price_high": recent_price_high, "recent_rsi": recent_rsi_high, 
-                     "prev_price_high": prev_price_high, "prev_rsi": prev_rsi_high, "price": latest_close}
-                ))
+            if len(df) >= 25:  # Ensure we have enough data for lookback
+                recent_price_high = df['high'].iloc[-5:].max()
+                recent_rsi_high = rsi.iloc[-5:].max()
+                prev_price_high = df['high'].iloc[-20:-5].max()
+                prev_rsi_high = rsi.iloc[-20:-5].max()
+                
+                if (recent_price_high > prev_price_high and 
+                    recent_rsi_high < prev_rsi_high and 
+                    not pd.isna(recent_rsi_high) and not pd.isna(prev_rsi_high) and
+                    np.isfinite(recent_rsi_high) and np.isfinite(prev_rsi_high)):
+                    signals.append(create_signal(
+                        "QUANT_MOMENTUM_BEARISH_DIVERGENCE", 0.65,
+                        {"recent_price_high": recent_price_high, "recent_rsi": recent_rsi_high, 
+                         "prev_price_high": prev_price_high, "prev_rsi": prev_rsi_high, "price": latest_close}
+                    ))
+    else:
+        logging.debug(f"Insufficient data for momentum analysis for {asset_symbol}: {len(returns_for_risk_models)} < 50")
 
     # --- 5. Market Regime Detection ---
-    if len(returns_for_risk_models) >= 60:
+    if len(returns_for_risk_models) >= 60:  # Increased from 60 to ensure robust regime detection
         # Rolling correlation with market (using returns as proxy)
         rolling_corr_window = 30
         
@@ -526,7 +687,7 @@ def generate_quant_advanced_signals(
         trend_direction = (price_changes > 0).astype(int)
         trend_persistence = trend_direction.rolling(window=rolling_corr_window).mean().iloc[-1]
         
-        if not pd.isna(trend_persistence):
+        if not pd.isna(trend_persistence) and np.isfinite(trend_persistence):
             # Strong uptrend regime
             if trend_persistence > 0.7:
                 signals.append(create_signal(
@@ -546,16 +707,19 @@ def generate_quant_advanced_signals(
         short_var = returns_for_risk_models.rolling(window=short_window).var().iloc[-1]
         long_var = returns_for_risk_models.rolling(window=long_window).var().iloc[-1]
         
-        if not pd.isna(short_var) and not pd.isna(long_var) and long_var > 1e-8:
+        if (not pd.isna(short_var) and not pd.isna(long_var) and 
+            np.isfinite(short_var) and np.isfinite(long_var) and long_var > 1e-8):
             variance_ratio = short_var / long_var
             # Regime change (high short-term volatility vs long-term)
-            if variance_ratio > 3.0:
+            if variance_ratio > 3.0 and np.isfinite(variance_ratio):
                 signals.append(create_signal(
                     "QUANT_REGIME_CHANGE_DETECTED", 0.65,
                     {"variance_ratio": variance_ratio, "threshold": 3.0, 
                      "short_term_vol": np.sqrt(short_var * trading_periods_per_year), 
                      "long_term_vol": np.sqrt(long_var * trading_periods_per_year), "price": latest_close}
                 ))
+    else:
+        logging.debug(f"Insufficient data for regime detection for {asset_symbol}: {len(returns_for_risk_models)} < 60")
 
     # --- 6. Liquidity and Market Microstructure ---
     if 'volume' in df.columns and len(df) >= 30:
@@ -563,23 +727,30 @@ def generate_quant_advanced_signals(
         price_changes = df['close'].pct_change()
         volume_price_trend = (price_changes * df['volume']).cumsum()
         
-        # VPT divergence
-        vpt_change = volume_price_trend.iloc[-5:].iloc[-1] - volume_price_trend.iloc[-10:].iloc[0]
-        price_change_5d = df['close'].iloc[-1] - df['close'].iloc[-5]
-        
-        if not pd.isna(vpt_change) and not pd.isna(price_change_5d):
-            # Price up but VPT down (bearish divergence)
-            if price_change_5d > 0 and vpt_change < 0:
-                signals.append(create_signal(
-                    "QUANT_LIQUIDITY_BEARISH_VPT_DIVERGENCE", 0.6,
-                    {"price_change_5d": price_change_5d, "vpt_change": vpt_change, "price": latest_close}
-                ))
-            # Price down but VPT up (bullish divergence)
-            elif price_change_5d < 0 and vpt_change > 0:
-                signals.append(create_signal(
-                    "QUANT_LIQUIDITY_BULLISH_VPT_DIVERGENCE", 0.6,
-                    {"price_change_5d": price_change_5d, "vpt_change": vpt_change, "price": latest_close}
-                ))
+        # VPT divergence - ensure we have enough data points
+        if len(volume_price_trend) >= 10:
+            # Use .iloc for safer indexing
+            vpt_recent = volume_price_trend.iloc[-1]
+            vpt_past = volume_price_trend.iloc[-10] if len(volume_price_trend) >= 10 else volume_price_trend.iloc[0]
+            vpt_change = vpt_recent - vpt_past
+            
+            price_recent = df['close'].iloc[-1]
+            price_past = df['close'].iloc[-5] if len(df) >= 5 else df['close'].iloc[0]
+            price_change_5d = price_recent - price_past
+            
+            if not pd.isna(vpt_change) and not pd.isna(price_change_5d):
+                # Price up but VPT down (bearish divergence)
+                if price_change_5d > 0 and vpt_change < 0:
+                    signals.append(create_signal(
+                        "QUANT_LIQUIDITY_BEARISH_VPT_DIVERGENCE", 0.6,
+                        {"price_change_5d": price_change_5d, "vpt_change": vpt_change, "price": latest_close}
+                    ))
+                # Price down but VPT up (bullish divergence)
+                elif price_change_5d < 0 and vpt_change > 0:
+                    signals.append(create_signal(
+                        "QUANT_LIQUIDITY_BULLISH_VPT_DIVERGENCE", 0.6,
+                        {"price_change_5d": price_change_5d, "vpt_change": vpt_change, "price": latest_close}
+                    ))
         
         # Volume anomaly detection
         volume_sma = df['volume'].rolling(window=20).mean()
@@ -631,7 +802,7 @@ def generate_quant_advanced_signals(
                 ))
 
     # --- 8. Fourier Analysis & Statistical Arbitrage ---
-    if len(df) >= 30:  # Minimum data for Fourier analysis
+    if len(df) >= 50:  # Increased from 30 to 50 for better Fourier analysis
         fourier_config = FourierSignalConfig(
             price_col_to_use="close",
             detrend_remove_fraction=0.05,
@@ -643,6 +814,12 @@ def generate_quant_advanced_signals(
             fourier_signal = fourier_results.get("fourier_signal", "Hold")
             signal_strength = fourier_results.get("signal_strength", 0.0)
             detrended_z_score = fourier_results.get("detrended_z_score", 0.0)
+            
+            # Validate signal strength and z-score
+            if not np.isfinite(signal_strength):
+                signal_strength = 0.0
+            if not np.isfinite(detrended_z_score):
+                detrended_z_score = 0.0
             
             # Generate signals based on Fourier analysis
             if fourier_signal == "Buy" and signal_strength > 0.3:
@@ -673,7 +850,7 @@ def generate_quant_advanced_signals(
                 ))
             
             # Additional signal for extreme detrended values (statistical arbitrage opportunity)
-            if not pd.isna(detrended_z_score):
+            if not pd.isna(detrended_z_score) and np.isfinite(detrended_z_score):
                 if abs(detrended_z_score) > 2.0:  # Extreme deviation from detrended mean
                     signal_type = "QUANT_FOURIER_EXTREME_DEVIATION_HIGH" if detrended_z_score > 0 else "QUANT_FOURIER_EXTREME_DEVIATION_LOW"
                     signals.append(create_signal(
@@ -689,14 +866,14 @@ def generate_quant_advanced_signals(
             
             # Fourier-based volatility regime detection
             global_std_dev = fourier_results.get("global_std_dev", 0.0)
-            if not pd.isna(global_std_dev) and global_std_dev > 0:
+            if not pd.isna(global_std_dev) and np.isfinite(global_std_dev) and global_std_dev > 0:
                 # Compare Fourier-derived volatility with realized volatility
-                if not pd.isna(latest_realized_vol_ann):
+                if not pd.isna(latest_realized_vol_ann) and np.isfinite(latest_realized_vol_ann):
                     # Convert global_std_dev to annualized terms (assuming it's from detrended daily prices)
                     fourier_vol_ann = global_std_dev * np.sqrt(trading_periods_per_year)
                     vol_ratio = fourier_vol_ann / latest_realized_vol_ann if latest_realized_vol_ann > 1e-6 else np.nan
                     
-                    if not pd.isna(vol_ratio):
+                    if not pd.isna(vol_ratio) and np.isfinite(vol_ratio):
                         if vol_ratio > 1.5:  # Fourier volatility significantly higher
                             signals.append(create_signal(
                                 "QUANT_FOURIER_HIGH_STRUCTURAL_VOL", 0.6,
@@ -719,6 +896,10 @@ def generate_quant_advanced_signals(
                                     "price": latest_close
                                 }
                             ))
+        else:
+            logging.debug(f"Fourier analysis failed for {asset_symbol} with {len(df)} data points")
+    else:
+        logging.debug(f"Insufficient data for Fourier analysis for {asset_symbol}: {len(df)} < 50")
 
     logging.info(f"Generated {len(signals)} Advanced Quant signals for {asset_symbol}.")
     return signals

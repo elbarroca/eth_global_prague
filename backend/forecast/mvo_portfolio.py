@@ -2,9 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import minimize
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
-from enum import Enum
+from typing import Dict, Any, Optional, Tuple
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -30,12 +28,6 @@ def _portfolio_volatility(weights: np.ndarray, expected_returns: pd.Series, cov_
     """Calculates portfolio volatility (to be minimized for min_volatility objective)."""
     # expected_returns and risk_free_rate are not used here but kept for consistent signature with _neg_sharpe_ratio
     return _calculate_portfolio_performance(weights, expected_returns, cov_matrix)[1]
-
-
-# --- Core Service Functions ---
-
-# Removed fetch_and_screen_tokens_by_tags function as it's not used in this module
-
 
 def calculate_mvo_inputs(
     ohlcv_data_dict: Dict[str, pd.DataFrame], # Dict of {symbol: ohlcv_df}

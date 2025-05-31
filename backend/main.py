@@ -3,9 +3,7 @@ from fastapi import FastAPI, HTTPException, Query, Body
 from typing import List, Optional, Dict, Any
 import logging
 import time
-import json
 import asyncio
-import uvicorn
 from pydantic import BaseModel, Field
 from services.mongo_service import (
     connect_to_mongo,
@@ -15,7 +13,6 @@ from services.mongo_service import (
     get_portfolio_from_cache,
     store_portfolio_in_cache
 )
-
 from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest
 from services import one_inch_data_service
 from services import one_inch_fusion_service
@@ -41,17 +38,11 @@ app = FastAPI(
 # --- NEW: FastAPI Startup and Shutdown Events for MongoDB and HTTP Client ---
 @app.on_event("startup")
 async def startup_app_clients():
-    try:
-        await connect_to_mongo()
-        logger.info("MongoDB connection established successfully on startup.")
-    except Exception as e:
-        logger.error(f"Failed to connect to MongoDB on startup: {e}")
-    
-    try:
-        await one_inch_data_service.get_http_client()
-        logger.info("Global HTTPX client initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize global HTTPX client: {e}")
+ 
+    await connect_to_mongo()
+    logger.info("MongoDB connection established successfully on startup.")
+    await one_inch_data_service.get_http_client()
+    logger.info("Global HTTPX client initialized.")
 
 @app.on_event("shutdown")
 async def shutdown_app_clients():
@@ -60,7 +51,6 @@ async def shutdown_app_clients():
     
     await one_inch_data_service.close_http_client()
     logger.info("Global HTTPX client closed.")
-# --- END NEW EVENTS ---
 
 # Constants for the screener endpoint
 API_CALL_DELAY_SECONDS = 0.2 # Delay between 1inch API calls to avoid rate limiting
@@ -80,18 +70,10 @@ async def screen_tokens_on_chain(
     
     The process is limited to 30 tokens and has a 1-minute timeout for efficiency.
     """
-    try:
-        # Wrap the entire screening process with a timeout
-        return await asyncio.wait_for(
-            _perform_token_screening(chain_id, timeframe),
-            timeout=SCREENING_TIMEOUT_SECONDS
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"Token screening for chain {chain_id} timed out after {SCREENING_TIMEOUT_SECONDS} seconds")
-        raise HTTPException(
-            status_code=408, 
-            detail=f"Token screening timed out after {SCREENING_TIMEOUT_SECONDS} seconds. Try again or use a smaller token set."
-        )
+    return await asyncio.wait_for(
+        _perform_token_screening(chain_id, timeframe),
+        timeout=SCREENING_TIMEOUT_SECONDS
+    )
 
 async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[str, Any]]:
     start_time = time.time()
@@ -223,9 +205,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                 logger.info(f"Skipping OHLCV for stablecoin base ({base_token_symbol}) vs stablecoin quote ({quote_name}) on {chain_name}.")
                 last_error_message_for_token = f"Stablecoin vs stablecoin pair ({base_token_symbol}/{quote_name}), OHLCV not fetched."
                 current_result["error"] = last_error_message_for_token
-                # If this error is set, and it's the last quote candidate, it will persist.
                 continue # Try next quote candidate
-            # --- END NEW ---
 
             pair_desc = f"{base_token_symbol}/{quote_symbol} on {chain_name}"
             logger.info(f"Processing OHLCV for {pair_desc} (using {quote_name}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
@@ -434,7 +414,6 @@ async def get_optimized_portfolio_for_chain(
 
     # 1. Perform token screening (fetches and stores OHLCV)
     try:
-        # Use the same timeout mechanism as the /screen_tokens endpoint
         screener_results = await asyncio.wait_for(
             _perform_token_screening(chain_id, timeframe),
             timeout=SCREENING_TIMEOUT_SECONDS 
@@ -463,7 +442,6 @@ async def get_optimized_portfolio_for_chain(
     for item in screener_results:
         if item.get("ohlcv_data") and not item.get("error") and item.get("base_token_address") and item.get("quote_token_address") and item.get("base_token_symbol"):
             # Construct a user-friendly asset symbol, e.g., "WETH-USDC"
-            # Quote symbol from screener might be "USDC_on_Ethereum", so take the part before "_"
             quote_symbol_short = item.get("quote_token_symbol", "QUOTE").split('_')[0]
             asset_symbol = f"{item['base_token_symbol']}-{quote_symbol_short}"
             
@@ -482,7 +460,6 @@ async def get_optimized_portfolio_for_chain(
         raise HTTPException(status_code=404, detail="No assets with valid OHLCV data found after screening. Cannot proceed with forecasting.")
     
     logger.info(f"Portfolio optimization pipeline: Prepared {len(asset_identifiers)} valid assets for forecasting from {valid_screened_assets_count} screened results.")
-
 
     # 3. Determine period_seconds and annualization_factor
     if timeframe.lower() == "hourly":
@@ -509,7 +486,6 @@ async def get_optimized_portfolio_for_chain(
         elif len(asset_identifiers) < 2: # Not enough assets for MVO at all
             logger.error(f"Portfolio optimization pipeline: Not enough valid assets ({len(asset_identifiers)}) for MVO (min 2 required).")
             raise HTTPException(status_code=400, detail=f"Not enough valid assets ({len(asset_identifiers)}) to perform MVO. Minimum 2 assets are required after screening.")
-
 
         logger.info(f"Calling forecast pipeline with {len(asset_identifiers)} assets, requesting top {actual_num_top_assets} for MVO.")
         
