@@ -86,6 +86,17 @@ class StoredPortfolioData(BaseModel):
     total_assets_screened: int
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+class ForecastSignalRecord(BaseModel):
+    asset_symbol: str
+    chain_id: int
+    token_address: str # Base token address
+    signal_type: str # e.g., "TA_RSI_OVERSOLD", "QUANT_MOMENTUM_HIGH_SHARPE"
+    confidence: float
+    details: Dict[str, Any] # Specifics of the signal
+    forecast_timestamp: int # Timestamp when the forecast was made (UTC seconds)
+    ohlcv_data_timestamp: int # Timestamp of the last OHLCV data point used for this forecast
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 class SingleChainPortfolioOptimizationResult(BaseModel):
     chain_id: int
     chain_name: str

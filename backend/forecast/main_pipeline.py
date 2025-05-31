@@ -7,8 +7,8 @@ import os
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import Signal
-from services.mongo_service import get_ohlcv_from_db
+from models import Signal, ForecastSignalRecord
+from services.mongo_service import get_ohlcv_from_db, store_forecast_signals
 from configs import COMMON_STABLECOIN_SYMBOLS
 
 # Import the forecast functions with correct relative paths
@@ -195,7 +195,8 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
     num_top_assets_for_portfolio: int = 10,  # Increased default to 10
     mvo_objective: str = "maximize_sharpe", # or "minimize_volatility"
     risk_free_rate: float = 0.02,
-    annualization_factor: int = 252 # Assuming daily data for MVO inputs
+    annualization_factor: int = 252, # Assuming daily data for MVO inputs
+    target_return_param: Optional[float] = None # Added this parameter
 ) -> Optional[Dict[str, Any]]:
     """
     Runs the full pipeline:
@@ -236,9 +237,19 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
             timeframe=timeframe
         )
         
-        ohlcv_df = pd.DataFrame(raw_ohlcv_data)
-        if ohlcv_df.empty:
-            logger.warning(f"OHLCV data for {asset_symbol} is empty after converting to DataFrame. Skipping.")
+        ohlcv_candles_list = []
+        if raw_ohlcv_data and "data" in raw_ohlcv_data:
+            ohlcv_candles_list = raw_ohlcv_data["data"]
+            if not ohlcv_candles_list: # Check if the list of candles is empty
+                logger.warning(f"OHLCV candle list for {asset_symbol} from DB is empty. Skipping.")
+                continue
+        else:
+            logger.warning(f"No OHLCV data or 'data' field not found in DB response for {asset_symbol}. Skipping.")
+            continue
+        
+        ohlcv_df = pd.DataFrame(ohlcv_candles_list)
+        if ohlcv_df.empty: # Should be redundant now if ohlcv_candles_list was not empty, but good as a safeguard
+            logger.warning(f"DataFrame for {asset_symbol} is empty even after fetching candle list. Skipping.")
             continue
 
         # Rename 'time' to 'timestamp' to match expected column name
@@ -303,6 +314,37 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         logger.error("No signals generated for any asset. Cannot proceed.")
         return None
 
+    # Store generated signals
+    signals_to_save_to_db: List[ForecastSignalRecord] = []
+    current_forecast_time = int(pd.Timestamp.now(tz='utc').timestamp())
+    for asset_symbol, signals_list in all_asset_signals.items():
+        last_ohlcv_timestamp = 0
+        if asset_symbol in ohlcv_data_dict and not ohlcv_data_dict[asset_symbol].empty:
+            last_ohlcv_timestamp = int(ohlcv_data_dict[asset_symbol]['timestamp'].iloc[-1])
+            
+        for sig in signals_list:
+            signals_to_save_to_db.append(
+                ForecastSignalRecord(
+                    asset_symbol=sig.asset_symbol,
+                    chain_id=sig.chain_id if sig.chain_id is not None else chain_id, # Ensure chain_id is present
+                    token_address=sig.token_address if sig.token_address is not None else "N/A", # Ensure token_address
+                    signal_type=sig.signal_type,
+                    confidence=sig.confidence,
+                    details=sig.details,
+                    forecast_timestamp=current_forecast_time, # Timestamp of when this forecast batch was run
+                    ohlcv_data_timestamp=last_ohlcv_timestamp, # Timestamp of the data used
+                )
+            )
+    
+    if signals_to_save_to_db:
+        logger.info(f"Attempting to store {len(signals_to_save_to_db)} generated forecast signals to DB...")
+        try:
+            await store_forecast_signals(signals_to_save_to_db)
+            logger.info("Successfully stored forecast signals.")
+        except Exception as e:
+            logger.error(f"Error storing forecast signals: {e}", exc_info=True)
+            # Continue pipeline even if signal storage fails for now
+
     # 2. Rank assets
     logger.info("Ranking assets based on generated signals...")
     ranked_assets_df = rank_assets_based_on_signals(all_asset_signals)
@@ -351,7 +393,8 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
         expected_returns=mvo_inputs["expected_returns"],
         covariance_matrix=mvo_inputs["covariance_matrix"],
         risk_free_rate=risk_free_rate,
-        objective=mvo_objective
+        objective=mvo_objective,
+        target_return=target_return_param 
     )
 
     if optimized_portfolio:

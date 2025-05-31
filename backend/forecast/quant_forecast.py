@@ -282,7 +282,7 @@ def fit_garch_and_forecast_volatility(
     assert isinstance(q, int) and q >= 0, "GARCH order q must be non-negative."
     assert isinstance(trading_periods_per_year, int) and trading_periods_per_year > 0
 
-    min_data_points = max(p + q + 20, 50) # Increased minimum for better stability
+    min_data_points = max(p + q + 30, 75) # Increased minimum for better stability (e.g. 75 points)
     if returns_series.dropna().empty or len(returns_series.dropna()) < min_data_points:
         logging.warning(f"Not enough data points ({len(returns_series.dropna())}) for GARCH({p},{q}) model. Required {min_data_points}.")
         return None
@@ -295,91 +295,98 @@ def fit_garch_and_forecast_volatility(
 
     # Check for extreme values that could cause numerical issues
     returns_std = clean_returns.std()
-    if pd.isna(returns_std) or returns_std < 1e-8:
-        logging.warning(f"Returns standard deviation too small or NaN: {returns_std}")
+    if pd.isna(returns_std) or returns_std < 1e-9: # Adjusted threshold slightly
+        logging.warning(f"Returns standard deviation too small or NaN: {returns_std}. GARCH may not be appropriate.")
         return None
 
     # Remove extreme outliers that can cause convergence issues
-    q99 = clean_returns.quantile(0.99)
-    q01 = clean_returns.quantile(0.01)
-    clean_returns = clean_returns.clip(lower=q01, upper=q99)
+    q995 = clean_returns.quantile(0.995) # Slightly tighter clip
+    q005 = clean_returns.quantile(0.005) # Slightly tighter clip
+    clean_returns_clipped = clean_returns.clip(lower=q005, upper=q995)
+    
+    if clean_returns_clipped.std() < 1e-9: # check again after clipping
+        logging.warning(f"Returns standard deviation too small after clipping: {clean_returns_clipped.std()}. GARCH aborted.")
+        return None
+
 
     # Scale returns to percentage for better numerical stability (multiply by 100)
-    scaled_returns = clean_returns * 100
+    scaled_returns = clean_returns_clipped * 100
     
     # Try different GARCH configurations if the first one fails
     garch_configs = [
-        {'p': p, 'q': q, 'mean': 'Constant'},
-        {'p': 1, 'q': 1, 'mean': 'Zero'},  # Fallback to simpler model
-        {'p': 1, 'q': 1, 'mean': 'Constant'},  # Another fallback
+        {'p': p, 'q': q, 'mean': 'Constant', 'dist': 'Normal'},
+        {'p': p, 'q': q, 'mean': 'Constant', 'dist': 'StudentsT'},
+        {'p': 1, 'q': 1, 'mean': 'Zero', 'dist': 'Normal'},
+        {'p': 1, 'q': 1, 'mean': 'Zero', 'dist': 'StudentsT'},
+        {'p': 1, 'q': 0, 'mean': 'Constant', 'dist': 'Normal'}, # ARCH(1)
+        {'p': 0, 'q': 1, 'mean': 'Constant', 'dist': 'Normal'}, # GARCH(0,1) - less common but a fallback
     ]
     
-    for config in garch_configs:
+    for config_params in garch_configs:
         try:
-            # Use specified mean model with GARCH volatility
             am = arch_model(scaled_returns, vol='Garch', 
-                          p=config['p'], o=0, q=config['q'], 
-                          dist='Normal', mean=config['mean'])
+                          p=config_params['p'], o=0, q=config_params['q'], 
+                          dist=config_params['dist'], mean=config_params['mean'])
             
-            # Fit with better convergence options and multiple starting values
             res = am.fit(update_freq=0, disp='off', 
-                        options={'maxiter': 2000, 'ftol': 1e-6},
-                        starting_values=None)
+                        options={'maxiter': 2500, 'ftol': 1e-7}, # Slightly more iterations/tighter tolerance
+                        show_warning=False) # Suppress convergence warnings here, check flag instead
             
-            # Check if model converged
-            if not res.convergence_flag:
-                logging.debug(f"GARCH({config['p']},{config['q']}) with {config['mean']} mean did not converge")
+            if not res.convergence_flag: # 0 means success
+                logging.debug(f"GARCH({config_params['p']},{config_params['q']}) with {config_params['mean']} mean, {config_params['dist']} dist did not converge (flag: {res.convergence_flag}). Message: {res.summary().tables[0].as_text().splitlines()[-1] if hasattr(res, 'summary') else 'No summary'}")
                 continue
 
-            # Forecast next period variance
-            forecast = res.forecast(horizon=1, reindex=False)
+            forecast = res.forecast(horizon=1, reindex=False, method='analytic') # 'analytic' or 'simulation' or 'bootstrap'
             cond_variance_forecast_scaled = forecast.variance.iloc[0, 0]
 
-            # Validate forecast
-            if pd.isna(cond_variance_forecast_scaled) or cond_variance_forecast_scaled <= 0:
-                logging.debug(f"GARCH forecast resulted in invalid variance: {cond_variance_forecast_scaled}")
+            if pd.isna(cond_variance_forecast_scaled) or cond_variance_forecast_scaled <= 1e-12: # Check for very small or NaN variance
+                logging.debug(f"GARCH forecast resulted in invalid/tiny variance: {cond_variance_forecast_scaled} for config {config_params}")
                 continue
 
-            # Convert back to original scale (divide by 100^2 for variance, then sqrt and divide by 100 for volatility)
             cond_volatility_daily = np.sqrt(cond_variance_forecast_scaled) / 100.0
             cond_volatility_annualized = cond_volatility_daily * np.sqrt(trading_periods_per_year)
 
-            # Validate final result
-            if not np.isfinite(cond_volatility_annualized) or cond_volatility_annualized <= 0:
-                logging.debug(f"Invalid annualized volatility forecast: {cond_volatility_annualized}")
+            if not np.isfinite(cond_volatility_annualized) or cond_volatility_annualized <= 1e-6:
+                logging.debug(f"Invalid or tiny annualized volatility forecast: {cond_volatility_annualized} for config {config_params}")
                 continue
 
-            # Success! Return results
+            logging.info(f"GARCH model converged successfully with config: {config_params}")
             return {
                 "conditional_volatility_forecast_annualized": float(cond_volatility_annualized),
                 "aic": float(res.aic),
                 "bic": float(res.bic),
-                "mu": float(res.params.get('mu', 0.0)),
-                "convergence_flag": res.convergence_flag,
-                "model_config": f"GARCH({config['p']},{config['q']}) with {config['mean']} mean"
+                "mu": float(res.params.get('mu', res.params.get('C', 0.0))), # 'C' for constant mean if 'mu' not present
+                "convergence_flag": res.convergence_flag, # Should be 0
+                "model_config": f"GARCH({config_params['p']},{config_params['q']}) with {config_params['mean']} mean, {config_params['dist']} dist"
             }
             
         except Exception as e:
-            logging.debug(f"GARCH({config['p']},{config['q']}) with {config['mean']} mean failed: {e}")
+            logging.debug(f"GARCH config {config_params} failed: {type(e).__name__} - {e}")
             continue
     
-    # If all configurations failed, try a simple historical volatility as fallback
     try:
-        historical_vol = clean_returns.std() * np.sqrt(trading_periods_per_year)
-        if np.isfinite(historical_vol) and historical_vol > 0:
-            logging.warning("GARCH models failed to converge, using historical volatility as fallback")
+        # Fallback to historical volatility if all GARCH models fail
+        historical_vol_daily = clean_returns_clipped.std() # Use clipped returns for consistency
+        if pd.isna(historical_vol_daily) or historical_vol_daily < 1e-9:
+             logging.error("Historical volatility calculation also resulted in NaN or very small value. Cannot provide volatility forecast.")
+             return None
+        
+        historical_vol_annualized = historical_vol_daily * np.sqrt(trading_periods_per_year)
+
+        if np.isfinite(historical_vol_annualized) and historical_vol_annualized > 1e-6:
+            logging.warning(f"All GARCH models failed. Using historical volatility ({historical_vol_annualized:.4f}) as fallback. Data size: {len(clean_returns)}, StdDev: {clean_returns.std():.4e}, Clipped StdDev: {clean_returns_clipped.std():.4e}")
             return {
-                "conditional_volatility_forecast_annualized": float(historical_vol),
+                "conditional_volatility_forecast_annualized": float(historical_vol_annualized),
                 "aic": np.nan,
                 "bic": np.nan,
-                "mu": float(clean_returns.mean()),
-                "convergence_flag": False,
+                "mu": float(clean_returns_clipped.mean()),
+                "convergence_flag": -1, # Indicate GARCH failure
                 "model_config": "Historical volatility fallback"
             }
-    except Exception as e:
-        logging.error(f"Even historical volatility fallback failed: {e}")
+    except Exception as e_hist:
+        logging.error(f"Historical volatility fallback also failed: {e_hist}")
     
-    logging.error("All GARCH model configurations and fallbacks failed")
+    logging.error(f"All GARCH model configurations and fallbacks failed for asset. Data size: {len(clean_returns)}, StdDev: {clean_returns.std():.4e}, Clipped StdDev: {clean_returns_clipped.std():.4e}")
     return None
 
 # --- VaR and CVaR Calculation ---

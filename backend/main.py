@@ -1,9 +1,11 @@
 # app/main.py
 from fastapi import FastAPI, HTTPException, Query, Body
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import logging
 import time
 import asyncio
+from datetime import datetime, timedelta, timezone
+import pandas as pd
 from pydantic import BaseModel, Field
 from services.mongo_service import (
     connect_to_mongo,
@@ -11,13 +13,17 @@ from services.mongo_service import (
     get_ohlcv_from_db,
     store_ohlcv_in_db,
     get_portfolio_from_cache,
-    store_portfolio_in_cache
+    store_portfolio_in_cache,
+    store_forecast_signals,
+    get_recent_forecast_signals
 )
-from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest
-from services import one_inch_data_service
-from services import one_inch_fusion_service
+from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest, SingleChainPortfolioOptimizationResult, CrossChainPortfolioResponse, Signal, ForecastSignalRecord
+from services import one_inch_data_service , one_inch_fusion_service
 from configs import *
-from forecast.main_pipeline import run_forecast_to_portfolio_pipeline
+from forecast.main_pipeline import run_forecast_to_portfolio_pipeline, filter_non_stablecoin_pairs, rank_assets_based_on_signals
+from forecast.quant_forecast import generate_quant_advanced_signals
+from forecast.ta_forecast import generate_ta_signals
+from forecast.mvo_portfolio import calculate_mvo_inputs, optimize_portfolio_mvo
 
 # Configure logging for the main application
 logger = logging.getLogger(__name__)
@@ -35,7 +41,6 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# --- NEW: FastAPI Startup and Shutdown Events for MongoDB and HTTP Client ---
 @app.on_event("startup")
 async def startup_app_clients():
  
@@ -68,14 +73,16 @@ async def screen_tokens_on_chain(
        - Checks MongoDB for fresh data first.
        - If not found or stale, fetches from 1inch API and stores/updates in MongoDB.
     
-    The process is limited to 30 tokens and has a 1-minute timeout for efficiency.
+    The process is limited to a configurable number of tokens and has a timeout for efficiency.
     """
+    # Defaulting to 30 tokens for this specific endpoint, can be made a parameter if needed
+    default_max_tokens_for_screening_endpoint = 30
     return await asyncio.wait_for(
-        _perform_token_screening(chain_id, timeframe),
+        _perform_token_screening(chain_id, timeframe, default_max_tokens_for_screening_endpoint),
         timeout=SCREENING_TIMEOUT_SECONDS
     )
 
-async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[str, Any]]:
+async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_screen: int) -> List[Dict[str, Any]]:
     start_time = time.time()
     chain_name = CHAIN_ID_TO_NAME.get(chain_id, "Unknown Chain")
     
@@ -118,12 +125,12 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
         logger.warning(f"No whitelisted tokens found for {chain_name}.")
         return []
 
-    # Limit to maximum 30 tokens for performance
-    MAX_TOKENS_TO_SCREEN = 30
-    tokens_to_screen = all_tokens_on_chain[:MAX_TOKENS_TO_SCREEN]
+    # Limit to maximum tokens for performance
+    tokens_to_screen_count = min(len(all_tokens_on_chain), max_tokens_to_screen)
+    tokens_to_screen = all_tokens_on_chain[:tokens_to_screen_count]
     
-    if len(all_tokens_on_chain) > MAX_TOKENS_TO_SCREEN:
-        logger.info(f"Limited token screening to {MAX_TOKENS_TO_SCREEN} tokens out of {len(all_tokens_on_chain)} available tokens for {chain_name}")
+    if len(all_tokens_on_chain) > tokens_to_screen_count:
+        logger.info(f"Limited token screening to {tokens_to_screen_count} tokens out of {len(all_tokens_on_chain)} available tokens for {chain_name}")
     
     logger.info(f"Attempting to screen {len(tokens_to_screen)} tokens for {chain_name}: {[t['symbol'] for t in tokens_to_screen[:10]]}...") # Log first 10
 
@@ -221,51 +228,72 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
             pair_desc = f"{base_token_symbol}/{quote_symbol} on {chain_name}"
             logger.info(f"Processing OHLCV for {pair_desc} (using {quote_name}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
 
-            cached_ohlcv = await get_ohlcv_from_db(
+            db_check_result = await get_ohlcv_from_db(
                 chain_id, base_token_address, quote_address, period_seconds, timeframe
             )
-            if cached_ohlcv is not None: # Not None means fresh data found (empty list is valid cached data)
-                current_result["ohlcv_data"] = cached_ohlcv
-                current_result["error"] = None
-                current_result["data_source"] = "database"
-                current_result["quote_token_address"] = quote_address # Confirm from DB query
-                current_result["quote_token_symbol"] = quote_symbol
-                logger.info(f"Successfully fetched {len(cached_ohlcv)} candles for {pair_desc} from database.")
-                ohlcv_fetched_successfully = True
-                break # Successfully got data from DB
+            
+            # Define the 24-hour threshold for API refresh
+            long_term_refresh_threshold = timedelta(hours=23) # Be a bit lenient to avoid missing an update cycle
 
-            logger.info(f"Data for {pair_desc} not in DB or stale. Fetching from API (attempt {attempt_idx + 1}/{len(potential_quotes)})...")
-            await asyncio.sleep(API_CALL_DELAY_SECONDS) # Use asyncio.sleep
+            if db_check_result:
+                db_candles = db_check_result["data"]
+                db_last_updated = db_check_result["last_updated"]
+                
+                # Check if data is recent enough (less than 24 hours old) to avoid API call
+                if datetime.now(timezone.utc) - db_last_updated < long_term_refresh_threshold:
+                    current_result["ohlcv_data"] = db_candles
+                    current_result["error"] = None
+                    current_result["data_source"] = "database_recent"
+                    current_result["quote_token_address"] = quote_address 
+                    current_result["quote_token_symbol"] = quote_symbol
+                    logger.info(f"Using RECENT ({db_last_updated.isoformat()}) OHLCV data from DB for {pair_desc} ({len(db_candles)} candles). No API call needed.")
+                    ohlcv_fetched_successfully = True
+                    break # Successfully got recent data from DB for this quote pair
+
+                # If data is older than 24 hours, or was marked stale_short_term and we want to refresh
+                logger.info(f"Data for {pair_desc} found in DB but is older than {long_term_refresh_threshold} (last updated: {db_last_updated.isoformat()}). Will attempt API fetch.")
+                # We will proceed to API fetch below, but we have db_candles if API fails
+            else: # No data in DB at all
+                logger.info(f"Data for {pair_desc} not in DB. Fetching from API (attempt {attempt_idx + 1}/{len(potential_quotes)})...")
+
+            # --- API Fetching (only if needed) ---
+            await asyncio.sleep(API_CALL_DELAY_SECONDS) 
 
             try:
+                # This is where you would implement logic to fetch only NEWER candles if db_check_result had data
+                # For now, it fetches the full range as before.
+                # from_timestamp_for_api = db_check_result["raw_document"]["ohlcv_candles"][-1]["time"] + 1 if db_check_result and db_candles else None 
+                # This 'limit' is for the number of candles, not a time range.
+                # The get_ohlcv_data calculates from/to timestamps based on limit.
+                
+                logger.info(f"Fetching from 1inch API for {pair_desc}...")
                 ohlcv_api_response = await one_inch_data_service.get_ohlcv_data(
                     base_token_address=base_token_address, 
                     quote_token_address=quote_address, 
-                    timeframe_granularity=timeframe,
+                    timeframe_granularity=timeframe, # This is like "day", "hour"
                     chain_id=chain_id,
-                    limit=1000
+                    limit=1000 # Max candles
                 )
-                # The Portfolio API v2 returns data directly, not nested under "data"
+
                 if ohlcv_api_response and isinstance(ohlcv_api_response, list):
                     api_candles = ohlcv_api_response
                     current_result["ohlcv_data"] = api_candles
                     current_result["error"] = None
                     current_result["data_source"] = "api"
-                    current_result["quote_token_address"] = quote_address # Confirm from successful API call
+                    current_result["quote_token_address"] = quote_address 
                     current_result["quote_token_symbol"] = quote_symbol
 
                     logger.info(f"Successfully fetched {len(api_candles)} candles for {pair_desc} from API.")
                     ohlcv_fetched_successfully = True
                     
-                    # --- NEW: Store in MongoDB ---
-                    if api_candles: # Only store if data is not empty
+                    if api_candles: 
                         await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
                             period_seconds, timeframe, api_candles
                         )
-                    else: # API returned success but empty data array
+                    else: 
                         logger.warning(f"API returned success but data array is empty for {pair_desc}. Not storing in DB.")
-                    break 
+                    break # Successfully fetched from API
                 elif ohlcv_api_response and isinstance(ohlcv_api_response, dict) and "data" in ohlcv_api_response:
                     # Fallback: some APIs might still use nested "data" structure
                     api_candles = ohlcv_api_response["data"]
@@ -284,22 +312,52 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                             period_seconds, timeframe, api_candles
                         )
                     break
-                else:
+                else: # API response was not as expected (e.g. empty dict, non-list)
                     logger.warning(f"OHLCV data for {pair_desc} (with {quote_name}) was fetched but data is empty, not a list, or in unexpected format. Response type: {type(ohlcv_api_response)}")
                     last_error_message_for_token = f"OHLCV data missing/empty from API (with {quote_name})."
-                    current_result["error"] = last_error_message_for_token
-            
+                    # If API fails but we had stale DB data, use that as a fallback
+                    if db_check_result and db_check_result.get("data"):
+                        logger.warning(f"API fetch for {pair_desc} failed or returned empty. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
+                        current_result["ohlcv_data"] = db_check_result["data"]
+                        current_result["error"] = None # Clearing error as we have fallback data
+                        current_result["data_source"] = "database_stale_fallback"
+                        current_result["quote_token_address"] = quote_address
+                        current_result["quote_token_symbol"] = quote_symbol
+                        ohlcv_fetched_successfully = True # Considered successful as we have data
+                        break # Stop trying other quote tokens if we have a fallback
+                    else:
+                         current_result["error"] = last_error_message_for_token
+
             except one_inch_data_service.OneInchAPIError as e:
                 logger.error(f"API Error fetching OHLCV for {pair_desc} (with {quote_name}): {e}")
                 last_error_message_for_token = f"1inch API Error (with {quote_name}): {str(e)}"
-                current_result["error"] = last_error_message_for_token
+                if db_check_result and db_check_result.get("data"): # Fallback to stale data on API error
+                    logger.warning(f"API error for {pair_desc}. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
+                    current_result["ohlcv_data"] = db_check_result["data"]
+                    current_result["error"] = None
+                    current_result["data_source"] = "database_stale_fallback_on_api_error"
+                    current_result["quote_token_address"] = quote_address
+                    current_result["quote_token_symbol"] = quote_symbol
+                    ohlcv_fetched_successfully = True
+                    break
+                else:
+                    current_result["error"] = last_error_message_for_token
                 if e.response_text and "charts not supported for chosen tokens" in e.response_text:
                     logger.warning(f"'Charts not supported' error for {pair_desc} with {quote_name}. Fallback (if any) will proceed.")
-
             except Exception as e:
                 logger.error(f"Unexpected error fetching OHLCV for {pair_desc} (with {quote_name}): {e}", exc_info=True)
                 last_error_message_for_token = f"Unexpected error (with {quote_name}): {str(e)}"
-                current_result["error"] = last_error_message_for_token
+                if db_check_result and db_check_result.get("data"): # Fallback to stale data on general error
+                    logger.warning(f"Unexpected error for {pair_desc}. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
+                    current_result["ohlcv_data"] = db_check_result["data"]
+                    current_result["error"] = None
+                    current_result["data_source"] = "database_stale_fallback_on_exception"
+                    current_result["quote_token_address"] = quote_address
+                    current_result["quote_token_symbol"] = quote_symbol
+                    ohlcv_fetched_successfully = True
+                    break
+                else:
+                    current_result["error"] = last_error_message_for_token
             
         if not ohlcv_fetched_successfully:
              current_result["error"] = last_error_message_for_token 
@@ -407,14 +465,397 @@ async def get_order_status(order_hash: str):
 async def root():
     return {"message": "Welcome to the 1inch API. Use /docs for API documentation."}
 
+async def process_single_chain_data_gathering(
+    chain_id_to_process: int,
+    timeframe_to_use: str,
+    max_tokens_to_screen_for_chain: int,
+    chain_name_map: Dict[int, str] # Pass CHAIN_ID_TO_NAME for consistent naming
+) -> Tuple[int, str, List[Dict[str, Any]], Optional[str]]: # chain_id, chain_name, list_of_asset_data, error_message
+    """
+    Fetches screener results (including OHLCV data as DataFrames) for a single chain.
+    """
+    chain_start_time = time.time()
+    # Use the passed chain_name_map for consistency
+    chain_name = chain_name_map.get(chain_id_to_process, f"Unknown Chain ({chain_id_to_process})")
+    logger.info(f"Data gathering: Starting for chain: {chain_name} (ID: {chain_id_to_process})")
+
+    asset_data_for_chain: List[Dict[str, Any]] = []
+    error_message_for_this_chain: Optional[str] = None
+
+    try:
+        screener_results = await asyncio.wait_for(
+            _perform_token_screening(chain_id_to_process, timeframe_to_use, max_tokens_to_screen_for_chain),
+            timeout=SCREENING_TIMEOUT_SECONDS
+        )
+
+        if not screener_results:
+            logger.warning(f"Data gathering: No assets found or screened for chain {chain_id_to_process} ({chain_name}).")
+            error_message_for_this_chain = "No assets found or screened for this chain via _perform_token_screening."
+        else:
+            logger.info(f"Data gathering: Received {len(screener_results)} items from _perform_token_screening for chain {chain_name}.")
+            for item_idx, item in enumerate(screener_results):
+                base_symbol = item.get("base_token_symbol")
+                if not (item.get("ohlcv_data") and not item.get("error") and item.get("base_token_address") and item.get("quote_token_address") and base_symbol):
+                    logger.warning(f"Data gathering: Skipping item {item_idx} for chain {chain_name} due to missing critical data or error: {item.get('error', 'N/A') if item.get('error') else 'Missing data fields'}")
+                    continue
+
+                quote_symbol_short = item.get("quote_token_symbol", "QUOTE").split('_')[0]
+                asset_symbol_global = f"{base_symbol}-{quote_symbol_short}_on_{chain_name}"
+
+                try:
+                    df = pd.DataFrame(item["ohlcv_data"])
+                    if df.empty:
+                        logger.warning(f"Data gathering: OHLCV DataFrame initially empty for {asset_symbol_global}. Skipping.")
+                        continue
+                    
+                    if 'time' in df.columns and 'timestamp' not in df.columns:
+                        df.rename(columns={'time': 'timestamp'}, inplace=True)
+                    if 'timestamp' not in df.columns:
+                        logger.warning(f"Data gathering: 'timestamp' column missing for {asset_symbol_global} after potential rename. Skipping.")
+                        continue
+
+                    df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce').astype('Int64') # Allow NaNs before dropping
+                    df.dropna(subset=['timestamp'], inplace=True) # Drop rows where timestamp couldn't be converted
+                    if df.empty:
+                        logger.warning(f"Data gathering: DataFrame empty for {asset_symbol_global} after timestamp conversion/dropna. Skipping.")
+                        continue
+                    
+                    required_ohlc_cols = ['open', 'high', 'low', 'close']
+                    missing_cols = [col for col in required_ohlc_cols if col not in df.columns]
+                    if missing_cols:
+                        logger.warning(f"Data gathering: Missing OHLC columns {missing_cols} for {asset_symbol_global}. Skipping.")
+                        continue
+                        
+                    for col in required_ohlc_cols:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    df.dropna(subset=required_ohlc_cols, inplace=True) # Drop rows if OHLC couldn't be numeric
+                    if df.empty:
+                        logger.warning(f"Data gathering: DataFrame empty for {asset_symbol_global} after OHLC conversion/dropna. Skipping.")
+                        continue
+
+                    if 'volume' not in df.columns:
+                        logger.debug(f"Data gathering: 'volume' column missing for {asset_symbol_global}. Initializing with 0.0.")
+                        df['volume'] = 0.0
+                    else:
+                        df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0.0)
+                    
+                    df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+
+
+                    asset_data_for_chain.append({
+                        "asset_symbol_global": asset_symbol_global,
+                        "ohlcv_df": df,
+                        "base_token_address": item["base_token_address"],
+                        "quote_token_address": item["quote_token_address"],
+                        "chain_id": chain_id_to_process,
+                        "chain_name": chain_name
+                    })
+                except Exception as e_df:
+                    logger.error(f"Data gathering: Error processing DataFrame for {asset_symbol_global} on chain {chain_name}: {e_df}", exc_info=True)
+                    # error_message_for_this_chain might accumulate last error, or just log per-asset
+            
+            if not asset_data_for_chain and not error_message_for_this_chain: # If all assets from screener failed conversion
+                 error_message_for_this_chain = "No valid OHLCV data could be processed for any screened assets on this chain."
+                 logger.warning(error_message_for_this_chain)
+
+    except asyncio.TimeoutError:
+        logger.error(f"Data gathering: Token screening timed out for chain {chain_id_to_process} ({chain_name}).")
+        error_message_for_this_chain = "Token screening phase timed out for this chain."
+    except HTTPException as e_http:
+        logger.error(f"Data gathering: HTTP error for chain {chain_id_to_process} ({chain_name}): {e_http.detail}")
+        error_message_for_this_chain = f"HTTP error during token screening: {e_http.detail}"
+    except Exception as e_main:
+        logger.error(f"Data gathering: Unexpected error for chain {chain_id_to_process} ({chain_name}): {str(e_main)}", exc_info=True)
+        error_message_for_this_chain = f"An unexpected error occurred: {str(e_main)}"
+    
+    chain_end_time = time.time()
+    logger.info(f"Data gathering: Finished for chain {chain_id_to_process} ({chain_name}). Took {chain_end_time - chain_start_time:.2f}s. Found {len(asset_data_for_chain)} valid assets.")
+    return chain_id_to_process, chain_name, asset_data_for_chain, error_message_for_this_chain
+
+@app.post("/portfolio/optimize_cross_chain/",
+            summary="Screen, Forecast, and Optimize a Single Portfolio Across Multiple Chains",
+            response_model=CrossChainPortfolioResponse)
+async def get_optimized_portfolios_for_chains(
+    chain_ids_str: str = Query(..., alias="chain_ids", description="Comma-separated string of chain IDs. E.g., 1,42161,10"),
+    timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data."),
+    max_tokens_per_chain: int = Query(260, ge=2, le=500, description="Max number of tokens to screen per chain (2-500)."),
+    mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility", "maximize_return"]),
+    risk_free_rate: float = Query(0.02, description="Risk-free rate."),
+    annualization_factor_override: Optional[int] = Query(None, ge=1),
+    target_return: Optional[float] = Query(None, description="Target annualized return (e.g., 0.8 for 80%) for 'minimize_volatility'.")
+):
+    main_request_start_time = time.time()
+    try:
+        chain_ids = [int(c.strip()) for c in chain_ids_str.split(',') if c.strip()]
+        if not chain_ids: raise ValueError("No chain IDs provided.")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid chain_ids: {e}")
+
+    logger.info(f"Cross-Chain Global MVO Request: chain_ids={chain_ids}, timeframe={timeframe}, max_tokens_per_chain={max_tokens_per_chain}, objective={mvo_objective}")
+
+    timeframe_lower = timeframe.lower()
+    if timeframe_lower == "min5": period_seconds, default_annual_factor = 300, 365 * 24 * 12
+    elif timeframe_lower == "min15": period_seconds, default_annual_factor = 900, 365 * 24 * 4
+    elif timeframe_lower == "hour": period_seconds, default_annual_factor = 3600, 365 * 24
+    elif timeframe_lower == "hour4": period_seconds, default_annual_factor = 14400, 365 * 6
+    elif timeframe_lower == "day": period_seconds, default_annual_factor = 86400, 365
+    elif timeframe_lower == "week": period_seconds, default_annual_factor = 604800, 52
+    elif timeframe_lower == "month": period_seconds, default_annual_factor = 2592000, 12
+    else: period_seconds, default_annual_factor = 86400, 365 # Default to day
+
+    annualization_factor = annualization_factor_override if annualization_factor_override is not None else default_annual_factor
+
+    # --- Step 1: Concurrently gather screened asset data from all chains ---
+    logger.info("Starting concurrent data gathering for all specified chains...")
+    data_gathering_tasks = [
+        process_single_chain_data_gathering(cid, timeframe, max_tokens_per_chain, CHAIN_ID_TO_NAME) for cid in chain_ids
+    ]
+    gathered_chain_data_results = await asyncio.gather(*data_gathering_tasks, return_exceptions=True)
+
+    # --- Step 2: Aggregate OHLCV data and create unique global asset list ---
+    all_asset_identifiers_global: List[Dict[str, Any]] = []
+    ohlcv_data_global: Dict[str, pd.DataFrame] = {}
+    chain_processing_statuses: Dict[str, Dict[str, Any]] = {}
+
+    for i, result_or_exc in enumerate(gathered_chain_data_results):
+        original_chain_id = chain_ids[i]
+        processed_chain_name = CHAIN_ID_TO_NAME.get(original_chain_id, f"Unknown Chain ({original_chain_id})")
+
+        if isinstance(result_or_exc, Exception):
+            logger.error(f"Data gathering task for chain {original_chain_id} ({processed_chain_name}) failed with exception: {result_or_exc}", exc_info=True)
+            chain_processing_statuses[str(original_chain_id)] = {"chain_name": processed_chain_name, "status": "error_task_exception", "error_message": str(result_or_exc), "assets_found": 0}
+            continue
+
+        _chain_id, _chain_name, asset_data_list, error_msg_chain = result_or_exc
+        chain_processing_statuses[str(_chain_id)] = {
+            "chain_name": _chain_name, "status": "success_data_gathering" if not error_msg_chain else "partial_data_gathering",
+            "error_message": error_msg_chain, "assets_found": len(asset_data_list)
+        }
+        if error_msg_chain and not asset_data_list: continue
+
+        for asset_data in asset_data_list:
+            asset_symbol_g = asset_data["asset_symbol_global"]
+            if asset_symbol_g not in ohlcv_data_global:
+                ohlcv_data_global[asset_symbol_g] = asset_data["ohlcv_df"]
+                all_asset_identifiers_global.append({
+                    "asset_symbol": asset_symbol_g, "base_token_address": asset_data["base_token_address"],
+                    "quote_token_address": asset_data["quote_token_address"], "chain_id": asset_data["chain_id"],
+                    "chain_name": asset_data["chain_name"]
+                })
+            else: logger.warning(f"Duplicate asset symbol during global aggregation: {asset_symbol_g}. Keeping first.")
+
+    if not all_asset_identifiers_global:
+        # Check if any chain had a hard failure vs. just no assets
+        hard_failures = sum(1 for stat in chain_processing_statuses.values() if "error" in stat["status"])
+        if hard_failures == len(chain_ids):
+             raise HTTPException(status_code=503, detail="Data gathering failed for all requested chains.")
+        else:
+             raise HTTPException(status_code=404, detail="No valid asset data gathered from any chain after screening. Some chains might have had partial success or no assets.")
+
+    logger.info(f"Global data aggregation complete. Total unique assets for forecasting: {len(all_asset_identifiers_global)}")
+
+    # --- Step 3: Global Forecasting ---
+    logger.info("Starting global forecasting for all aggregated assets...")
+    global_all_signals: Dict[str, List[Signal]] = {}
+    
+    valid_identifiers_for_forecast = [
+        ident for ident in all_asset_identifiers_global if ident["asset_symbol"] in ohlcv_data_global and not ohlcv_data_global[ident["asset_symbol"]].empty
+    ]
+
+    # Define how old a forecast can be to be considered fresh (e.g., 4 hours)
+    MAX_FORECAST_AGE_HOURS = 4
+
+    for asset_info_global in valid_identifiers_for_forecast:
+        asset_symbol_g = asset_info_global["asset_symbol"]
+        original_chain_id_for_signal = asset_info_global["chain_id"]
+        base_token_addr_for_signal = asset_info_global["base_token_address"]
+        ohlcv_df_g = ohlcv_data_global[asset_symbol_g]
+        
+        min_data_points = 50
+        if len(ohlcv_df_g) < min_data_points:
+            logger.warning(f"Global forecast: Insufficient OHLCV for {asset_symbol_g} ({len(ohlcv_df_g)} rows). Need {min_data_points}. Skipping signal generation/retrieval.")
+            continue
+
+        # Attempt to retrieve recent forecast signals from DB
+        retrieved_db_signals: Optional[List[ForecastSignalRecord]] = await get_recent_forecast_signals(
+            asset_symbol_global=asset_symbol_g, 
+            chain_id=original_chain_id_for_signal,
+            max_forecast_age_hours=MAX_FORECAST_AGE_HOURS
+        )
+
+        if retrieved_db_signals:
+            logger.info(f"Using {len(retrieved_db_signals)} cached forecast signals for {asset_symbol_g}.")
+            # Convert ForecastSignalRecord back to Signal (if necessary, or adapt ranking function)
+            # For now, assuming Signal and ForecastSignalRecord are compatible enough for rank_assets_based_on_signals
+            # or that rank_assets_based_on_signals can handle a list of ForecastSignalRecord.
+            # Let's assume for now the `Signal` dataclass and `ForecastSignalRecord` pydantic model are compatible for ranking.
+            # If not, a conversion step would be needed here.
+            # Example conversion (if Signal dataclass is strictly needed by ranking fn):
+            # global_all_signals[asset_symbol_g] = [
+            #     Signal(
+            #         asset_symbol=rec.asset_symbol, signal_type=rec.signal_type, confidence=rec.confidence,
+            #         details=rec.details, timestamp=rec.forecast_timestamp, # or ohlcv_data_timestamp based on ranker needs
+            #         chain_id=rec.chain_id, token_address=rec.token_address
+            #     ) for rec in retrieved_db_signals
+            # ]
+            # For simplicity now, assign directly if structures are close enough for ranking.
+            # The Signal model has: asset_symbol, signal_type, confidence, details, timestamp, chain_id, token_address
+            # ForecastSignalRecord has these and more. `rank_assets_based_on_signals` uses signal_type and confidence.
+            # The `timestamp` field in Signal might be ambiguous. Let's map forecast_timestamp to it.
+            current_signals_for_asset = []
+            for rec in retrieved_db_signals:
+                current_signals_for_asset.append(Signal(
+                    asset_symbol=rec.asset_symbol,
+                    signal_type=rec.signal_type,
+                    confidence=rec.confidence,
+                    details=rec.details,
+                    timestamp=rec.forecast_timestamp, # Using forecast_timestamp here
+                    chain_id=rec.chain_id,
+                    token_address=rec.token_address
+                ))
+            global_all_signals[asset_symbol_g] = current_signals_for_asset
+        else:
+            logger.info(f"No recent cached signals for {asset_symbol_g}. Generating new signals...")
+            current_price_g = ohlcv_df_g['close'].iloc[-1]
+            ta_signals_g = generate_ta_signals(asset_symbol_g, original_chain_id_for_signal, base_token_addr_for_signal, ohlcv_df_g.copy(), current_price_g)
+            quant_signals_g = generate_quant_advanced_signals(asset_symbol_g, original_chain_id_for_signal, base_token_addr_for_signal, ohlcv_df_g.copy(), current_price_g, annualization_factor)
+            generated_signals_list = ta_signals_g + quant_signals_g
+            global_all_signals[asset_symbol_g] = generated_signals_list
+            
+            # Store newly generated signals (this part is already in the subsequent block, let's ensure it uses the generated_signals_list)
+            # The existing block for storing signals will pick these up.
+
+    if not global_all_signals:
+        # Before raising, check if it was due to all assets failing the min_data_points check
+        if not valid_identifiers_for_forecast or all(len(ohlcv_data_global[ident["asset_symbol"]]) < 50 for ident in valid_identifiers_for_forecast if ident["asset_symbol"] in ohlcv_data_global):
+            raise HTTPException(status_code=404, detail="Global forecasting: No assets had sufficient data (min 50 points) for signal generation.")
+        else:
+            raise HTTPException(status_code=500, detail="Global forecasting generated no signals for assets that had sufficient data.")
+
+    signals_to_save_globally: List[ForecastSignalRecord] = []
+    current_forecast_time_global = int(pd.Timestamp.now(tz='utc').timestamp())
+    for asset_sym_g, sig_list_g in global_all_signals.items():
+        asset_info_orig = next((aig for aig in all_asset_identifiers_global if aig["asset_symbol"] == asset_sym_g), None)
+        if not asset_info_orig: continue
+
+        # The logic for 'was_from_cache' was a bit complex to reliably implement here
+        # without changing how signals are collected (e.g., into separate lists for new vs cached).
+        # For now, the current behavior is: if cached signals are used, they are used.
+        # If new signals are generated, they are used.
+        # All signals that end up in `global_all_signals` (whether from cache or newly generated)
+        # are then prepared to be written to the ForecastSignalRecord collection with the *current_forecast_time_global*.
+        # This means cached signals, when re-processed in a new run, would get a new forecast_timestamp if they are included again.
+        # get_recent_forecast_signals always fetches the latest forecast_timestamp batch, so this is somewhat self-correcting.
+
+        last_ohlcv_ts_g = int(ohlcv_data_global[asset_sym_g]['timestamp'].iloc[-1]) if asset_sym_g in ohlcv_data_global and not ohlcv_data_global[asset_sym_g].empty else 0
+        for sig_g in sig_list_g: # sig_list_g is List[Signal]
+            signals_to_save_globally.append(ForecastSignalRecord(
+                asset_symbol=sig_g.asset_symbol, 
+                chain_id=asset_info_orig["chain_id"],
+                token_address=asset_info_orig["base_token_address"],
+                signal_type=sig_g.signal_type, 
+                confidence=sig_g.confidence, 
+                details=sig_g.details,
+                forecast_timestamp=current_forecast_time_global, # All signals in this batch get current run's timestamp
+                ohlcv_data_timestamp=last_ohlcv_ts_g,
+            ))
+            
+    if signals_to_save_globally:
+        logger.info(f"Attempting to store {len(signals_to_save_globally)} globally generated forecast signals...")
+        try: await store_forecast_signals(signals_to_save_globally)
+        except Exception as e_store_sig: logger.error(f"Error storing global forecast signals: {e_store_sig}", exc_info=True)
+
+    # --- Step 4: Global Ranking ---
+    logger.info("Performing global asset ranking...")
+    global_ranked_assets_df = rank_assets_based_on_signals(global_all_signals)
+    if global_ranked_assets_df.empty: 
+        # Check if global_all_signals was empty due to prior filtering
+        if not global_all_signals: 
+            raise HTTPException(status_code=404, detail="Global asset ranking failed because no signals were generated or available for ranking.")
+        else:
+            raise HTTPException(status_code=500, detail="Global asset ranking produced an empty result from non-empty signals.")
+    logger.info(f"Global Asset Ranking (Top 5):\n{global_ranked_assets_df.head().to_string()}")
+
+    # --- Step 5: Select Assets for Global MVO ---
+    assets_for_global_mvo_input = [
+        asset_sym for asset_sym in global_ranked_assets_df['asset'].tolist()
+        if asset_sym in ohlcv_data_global and not ohlcv_data_global[asset_sym].empty and len(ohlcv_data_global[asset_sym]) >= 2 
+    ]
+    if len(assets_for_global_mvo_input) < 2:
+        raise HTTPException(status_code=400, detail=f"Not enough assets ({len(assets_for_global_mvo_input)}) for Global MVO after ranking (min 2 with sufficient data for covariance).")
+
+    ohlcv_for_global_mvo_input = {sym: ohlcv_data_global[sym] for sym in assets_for_global_mvo_input}
+    
+    # --- Step 6: Calculate Global MVO Inputs ---
+    logger.info(f"Calculating MVO inputs for {len(assets_for_global_mvo_input)} global assets...")
+    mvo_inputs_global = calculate_mvo_inputs(
+        ohlcv_data=ohlcv_for_global_mvo_input,
+        ranked_assets_df=global_ranked_assets_df[global_ranked_assets_df['asset'].isin(assets_for_global_mvo_input)].copy(), # Pass filtered df
+        annualization_factor=annualization_factor
+    )
+    if mvo_inputs_global["expected_returns"].empty or mvo_inputs_global["covariance_matrix"].empty:
+        raise HTTPException(status_code=500, detail="Global MVO input calculation failed (empty returns/covariance).")
+
+    # --- Step 7: Perform Global MVO ---
+    logger.info(f"Optimizing global portfolio with objective: {mvo_objective}...")
+    optimized_global_portfolio_raw = optimize_portfolio_mvo(
+        expected_returns=mvo_inputs_global["expected_returns"],
+        covariance_matrix=mvo_inputs_global["covariance_matrix"],
+        risk_free_rate=risk_free_rate, objective=mvo_objective, target_return=target_return
+    )
+    if not optimized_global_portfolio_raw: raise HTTPException(status_code=500, detail="Global portfolio optimization failed.")
+
+    # Ensure weights are converted to dict for Pydantic serialization
+    optimized_global_portfolio_serializable = optimized_global_portfolio_raw.copy()
+    if "weights" in optimized_global_portfolio_serializable and isinstance(optimized_global_portfolio_serializable["weights"], pd.Series):
+        optimized_global_portfolio_serializable["weights"] = optimized_global_portfolio_serializable["weights"].to_dict()
+    
+    # --- Step 8: Format and Return Final Response ---
+    total_duration = time.time() - main_request_start_time
+    global_portfolio_data_payload = {
+        "ranked_assets_summary": global_ranked_assets_df[['asset', 'score', 'num_bullish', 'num_bearish']].head(20).to_dict(orient='records'),
+        "optimized_portfolio_details": optimized_global_portfolio_serializable,
+        "mvo_inputs_summary": {
+            "expected_returns_top_n": mvo_inputs_global["expected_returns"].nlargest(min(5, len(mvo_inputs_global["expected_returns"]))).to_dict(),
+            "covariance_matrix_shape": str(mvo_inputs_global["covariance_matrix"].shape),
+            "valid_symbols_count_for_mvo": len(mvo_inputs_global["valid_symbols"])
+        },
+    }
+
+    return CrossChainPortfolioResponse(
+        results_by_chain={ # This structure is kept for consistency, but now holds one global result
+            "global_cross_chain": SingleChainPortfolioOptimizationResult(
+                chain_id=0, # Representing a global/aggregated scope
+                chain_name="Global Cross-Chain Portfolio", 
+                status="success", 
+                data=global_portfolio_data_payload,
+                request_params_for_chain={
+                    "chain_ids_requested": chain_ids, "timeframe": timeframe, "mvo_objective": mvo_objective,
+                    "risk_free_rate": risk_free_rate, "annualization_factor_used": annualization_factor,
+                    "max_tokens_per_chain_screening": max_tokens_per_chain, "target_return": target_return
+                })
+        },
+        overall_request_summary={
+            "requested_chain_ids": chain_ids, "timeframe": timeframe, "max_tokens_per_chain_screening": max_tokens_per_chain,
+            "mvo_objective": mvo_objective, "risk_free_rate": risk_free_rate, "annualization_factor_used": annualization_factor,
+            "total_unique_assets_after_screening": len(all_asset_identifiers_global),
+            "assets_considered_for_global_mvo": len(assets_for_global_mvo_input),
+            "assets_in_final_portfolio": optimized_global_portfolio_serializable.get("assets_with_allocation", 0),
+            "total_processing_time_seconds": round(total_duration, 2),
+            "chain_data_gathering_summary": chain_processing_statuses
+        }
+    )
+
 @app.post("/portfolio/optimize/{chain_id}", summary="Screen, Forecast, and Optimize Portfolio", response_model=Dict[str, Any])
 async def get_optimized_portfolio_for_chain(
     chain_id: int,
     timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data."),
     num_top_assets: int = Query(10, ge=2, le=20, description="Number of top assets for MVO (2-20). Min 2 for MVO."),
-    mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility"], description="MVO objective function."),
+    mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility", "maximize_return"], description="MVO objective function."),
     risk_free_rate: float = Query(0.02, description="Risk-free rate for Sharpe ratio calculation."),
-    annualization_factor_override: Optional[int] = Query(None, ge=1, description="Optional: Override annualization factor for MVO (e.g., 365 for daily, 252 for trading days). Default is dynamic based on timeframe.")
+    annualization_factor_override: Optional[int] = Query(None, ge=1, description="Optional: Override annualization factor for MVO (e.g., 365 for daily, 252 for trading days). Default is dynamic based on timeframe."),
+    target_return: Optional[float] = Query(None, description="Target annualized return (e.g., 0.8 for 80%). Used if objective is 'minimize_volatility'.")
 ):
     """
     Full pipeline:
@@ -449,7 +890,7 @@ async def get_optimized_portfolio_for_chain(
     # 1. Perform token screening (fetches and stores OHLCV)
     try:
         screener_results = await asyncio.wait_for(
-            _perform_token_screening(chain_id, timeframe),
+            _perform_token_screening(chain_id, timeframe, num_top_assets), # Pass num_top_assets as max_tokens_to_screen
             timeout=SCREENING_TIMEOUT_SECONDS 
         )
     except asyncio.TimeoutError:
@@ -548,7 +989,8 @@ async def get_optimized_portfolio_for_chain(
             num_top_assets_for_portfolio=actual_num_top_assets,
             mvo_objective=mvo_objective,
             risk_free_rate=risk_free_rate,
-            annualization_factor=annualization_factor
+            annualization_factor=annualization_factor,
+            target_return_param=target_return # Pass target_return here
         )
     except Exception as e:
         logger.error(f"Portfolio optimization pipeline: Error during forecast/MVO execution: {str(e)}", exc_info=True)
