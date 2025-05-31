@@ -39,13 +39,13 @@ def _portfolio_return(weights: np.ndarray, expected_returns: pd.Series, cov_matr
 def calculate_mvo_inputs(
     ohlcv_data: Dict[str, pd.DataFrame], # Assuming this was the original first arg
     ranked_assets_df: Optional[pd.DataFrame] = None, # Add this new argument
-    annualization_factor: int = 252 # Trading days in a year
+    annualization_factor: int = 365 # Trading days in a year
 ) -> Dict[str, Any]:
     """
     Calculates expected returns (annualized) and covariance matrix (annualized)
     from historical OHLCV data.
     """
-    all_returns_df = pd.DataFrame()
+    returns_dict = {}
     valid_symbols_for_mvo = []
 
     for symbol, df in ohlcv_data.items():
@@ -53,17 +53,19 @@ def calculate_mvo_inputs(
             # Use log returns for calculations, can also use simple returns
             log_returns = np.log(df['close'] / df['close'].shift(1)).dropna()
             if not log_returns.empty:
-                all_returns_df[symbol] = log_returns
+                returns_dict[symbol] = log_returns
                 valid_symbols_for_mvo.append(symbol)
             else:
                 logger.warning(f"No log returns could be calculated for {symbol}, skipping for MVO inputs.")
         else:
             logger.warning(f"Close price data missing or empty for {symbol}, skipping for MVO inputs.")
             
-    if all_returns_df.empty or all_returns_df.shape[1] < 2: # Need at least two assets for covariance
+    if not returns_dict or len(returns_dict) < 2: # Need at least two assets for covariance
         logger.error("Not enough valid assets with returns data to calculate MVO inputs.")
         return {"expected_returns": pd.Series(dtype=float), "covariance_matrix": pd.DataFrame(), "valid_symbols": []}
 
+    # Use pd.concat instead of iteratively assigning columns to avoid fragmentation
+    all_returns_df = pd.concat(returns_dict, axis=1)
     all_returns_df = all_returns_df.ffill().bfill().fillna(0)
     
     expected_returns = all_returns_df.mean() * annualization_factor
@@ -129,11 +131,6 @@ def optimize_portfolio_mvo(
         # If a target_return is specified with maximize_return, it could imply a floor,
         # but standard MVO maximize_return doesn't typically use it this way.
         # For now, we'll ignore target_return for maximize_return as it aims for the highest possible.
-        if target_return is not None:
-            logger.warning("target_return is specified with 'maximize_return' objective, but it will be ignored as the objective is to maximize return without such a target constraint in this setup.")
-            # Potentially, one could add a constraint like: {'type': 'ineq', 'fun': lambda w: _calculate_portfolio_performance(w, ER, C)[0] - target_return}
-            # This would mean "return must be AT LEAST target_return". But this makes it a different problem.
-            # For pure "maximize_return", no such constraint.
     else:
         logger.error(f"Unsupported MVO objective: {objective}")
         return None

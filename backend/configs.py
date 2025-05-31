@@ -14,7 +14,7 @@ COMMON_STABLECOIN_SYMBOLS = {
     "USDT.E", "USDS_2", "USDC_2", "USDT_2", "USDC.E", "USDT.E", "USDC_E", "USDT_E", "ALUSD",
     "DOLA", "USD+", "USDPLUS", "USD_PLUS", "MIMATIC", "MAI", "AGEUR", "JEUR", "CEUR",
     "USDD", "USTC", "USDH", "USDN", "USDK", "USDJ", "USDR", "USDS", "USDT", "USDC", "SUSDS",
-    "EURC", "DAI.E"
+    "EURC", "DAI.E", "CUSDC", "USDM"
 }
 # Chain IDs (can be expanded)
 ETHEREUM_CHAIN_ID = 1
