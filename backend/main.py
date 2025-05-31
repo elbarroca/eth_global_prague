@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 from pydantic import BaseModel, Field
+from fastapi.middleware.cors import CORSMiddleware
 from services.mongo_service import (
     connect_to_mongo,
     close_mongo_connection,
@@ -41,6 +42,21 @@ app = FastAPI(
     title="1inch Token Screener API",
     description="API for DeFI Asset Management, Token Screening, and Portfolio Optimization",
     version="0.1.0"
+)
+
+# CORS configuration
+origins = [
+    "http://localhost", # Your frontend origin if it's just localhost without port
+    "http://localhost:3000",  # Assuming your Next.js frontend runs on port 3000
+    # Add any other origins you need to allow (e.g., your deployed frontend URL)
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
 @app.on_event("startup")
@@ -88,21 +104,22 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
     start_time = time.time()
     chain_name = CHAIN_ID_TO_NAME.get(chain_id, "Unknown Chain")
     
-    # Determine period_seconds from timeframe
-    if timeframe.lower() == "min5":
-        period_seconds = 300
-    elif timeframe.lower() == "min15":
-        period_seconds = 900
-    elif timeframe.lower() == "hour":
-        period_seconds = 3600
-    elif timeframe.lower() == "hour4":
-        period_seconds = 14400
-    elif timeframe.lower() == "day":
-        period_seconds = 86400
-    elif timeframe.lower() == "week":
-        period_seconds = 604800
-    elif timeframe.lower() == "month":
-        period_seconds = 2592000 # Approx 30 days
+    # Determine period_seconds from timeframe and map to 1inch API format
+    timeframe_mapping = {
+        "min5": ("5min", 300),
+        "min15": ("15min", 900), 
+        "hour": ("hour", 3600),
+        "hour4": ("4hour", 14400),
+        "day": ("day", 86400),
+        "week": ("week", 604800),
+        "month": ("month", 2592000)  # Approx 30 days
+    }
+    
+    timeframe_lower = timeframe.lower()
+    if timeframe_lower in timeframe_mapping:
+        api_timeframe, period_seconds = timeframe_mapping[timeframe_lower]
+        # Update timeframe to match 1inch API format for downstream usage
+        timeframe = api_timeframe
     else:
         logger.warning(f"Invalid timeframe '{timeframe}' received. Defaulting to day (86400s).")
         period_seconds = 86400
@@ -643,15 +660,25 @@ async def get_optimized_portfolios_for_chains(
         logger.warning(f"Error retrieving from cross-chain portfolio cache (request: {consistent_chain_ids_str}, {timeframe}): {e_cache_get}. Proceeding with full calculation.")
 
 
+    # Map timeframe to 1inch API format and determine period_seconds/annualization
+    timeframe_config = {
+        "min5": ("5min", 300, 365 * 24 * 12),
+        "min15": ("15min", 900, 365 * 24 * 4),
+        "hour": ("hour", 3600, 365 * 24),
+        "hour4": ("4hour", 14400, 365 * 6),
+        "day": ("day", 86400, 365),
+        "week": ("week", 604800, 52),
+        "month": ("month", 2592000, 12)
+    }
+    
     timeframe_lower = timeframe.lower()
-    if timeframe_lower == "min5": period_seconds, default_annual_factor = 300, 365 * 24 * 12
-    elif timeframe_lower == "min15": period_seconds, default_annual_factor = 900, 365 * 24 * 4
-    elif timeframe_lower == "hour": period_seconds, default_annual_factor = 3600, 365 * 24
-    elif timeframe_lower == "hour4": period_seconds, default_annual_factor = 14400, 365 * 6
-    elif timeframe_lower == "day": period_seconds, default_annual_factor = 86400, 365
-    elif timeframe_lower == "week": period_seconds, default_annual_factor = 604800, 52
-    elif timeframe_lower == "month": period_seconds, default_annual_factor = 2592000, 12
-    else: period_seconds, default_annual_factor = 86400, 365 # Default to day
+    if timeframe_lower in timeframe_config:
+        api_timeframe, period_seconds, default_annual_factor = timeframe_config[timeframe_lower]
+        # Update timeframe to match 1inch API format for downstream usage
+        timeframe = api_timeframe
+    else: 
+        period_seconds, default_annual_factor = 86400, 365 # Default to day
+        timeframe = "day"
 
     annualization_factor = annualization_factor_override if annualization_factor_override is not None else default_annual_factor
 
@@ -1066,29 +1093,22 @@ async def get_optimized_portfolio_for_chain(
     
     logger.info(f"Portfolio optimization pipeline: Prepared {len(asset_identifiers)} valid assets for forecasting from {valid_screened_assets_count} screened results.")
 
-    # 3. Determine period_seconds and annualization_factor
+    # 3. Determine period_seconds and annualization_factor, map to 1inch API format
+    timeframe_config = {
+        "min5": ("5min", 300, 365 * 24 * 12),
+        "min15": ("15min", 900, 365 * 24 * 4),
+        "hour": ("hour", 3600, 365 * 24),
+        "hour4": ("4hour", 14400, 365 * 6),
+        "day": ("day", 86400, 365),
+        "week": ("week", 604800, 52),
+        "month": ("month", 2592000, 12)  # Approx 30 days
+    }
+    
     timeframe_lower = timeframe.lower()
-    if timeframe_lower == "min5":
-        period_seconds = 300
-        default_annual_factor = 365 * 24 * 12
-    elif timeframe_lower == "min15":
-        period_seconds = 900
-        default_annual_factor = 365 * 24 * 4
-    elif timeframe_lower == "hour":
-        period_seconds = 3600
-        default_annual_factor = 365 * 24
-    elif timeframe_lower == "hour4":
-        period_seconds = 14400
-        default_annual_factor = 365 * 6
-    elif timeframe_lower == "day":
-        period_seconds = 86400
-        default_annual_factor = 365
-    elif timeframe_lower == "week":
-        period_seconds = 604800
-        default_annual_factor = 52
-    elif timeframe_lower == "month":
-        period_seconds = 2592000 # Approx 30 days
-        default_annual_factor = 12
+    if timeframe_lower in timeframe_config:
+        api_timeframe, period_seconds, default_annual_factor = timeframe_config[timeframe_lower]
+        # Update timeframe to match 1inch API format for downstream usage
+        timeframe = api_timeframe
     else: 
         logger.warning(f"Invalid timeframe '{timeframe}' in optimize endpoint. Defaulting to daily period and annualization.")
         period_seconds = 86400
