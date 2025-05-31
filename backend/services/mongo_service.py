@@ -5,8 +5,10 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncI
 from pymongo.errors import ConnectionFailure, OperationFailure
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
-from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfolioData
+from typing import List, Dict, Any, Optional, Tuple
+from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfolioData, ForecastSignalRecord
+from pandas import Series as pd_Series, DataFrame as pd_DataFrame
+import pandas as pd
 
 import asyncio
 
@@ -25,6 +27,7 @@ MONGO_URI = os.getenv('MONGO_URI')
 DATABASE_NAME = os.getenv('DATABASE_NAME')
 OHLCV_COLLECTION_NAME = "ohlcv_data"
 PORTFOLIO_COLLECTION_NAME = "portfolio_cache"
+FORECAST_SIGNALS_COLLECTION_NAME = "forecast_signals"
 
 # Cache durations
 CACHE_DURATION_HOURLY_SECONDS = 30 * 60  # 30 minutes (was 1 hour)
@@ -81,6 +84,10 @@ async def connect_to_mongo():
             logger.info(f"Creating collection '{PORTFOLIO_COLLECTION_NAME}' (async)...")
             await db.create_collection(PORTFOLIO_COLLECTION_NAME)
         
+        if FORECAST_SIGNALS_COLLECTION_NAME not in collection_names:
+            logger.info(f"Creating collection '{FORECAST_SIGNALS_COLLECTION_NAME}' (async)...")
+            await db.create_collection(FORECAST_SIGNALS_COLLECTION_NAME)
+        
         collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
         
         indexes = await collection.index_information()
@@ -128,6 +135,29 @@ async def connect_to_mongo():
             await portfolio_collection.create_index([("last_updated", pymongo.DESCENDING)], name=portfolio_last_updated_index_name)
             logger.info(f"Created index '{portfolio_last_updated_index_name}' on portfolio 'last_updated' field (async).")
             
+        # Create indexes for forecast_signals collection
+        forecast_signals_collection: AsyncIOMotorCollection = db[FORECAST_SIGNALS_COLLECTION_NAME]
+        forecast_signals_indexes = await forecast_signals_collection.index_information()
+        
+        forecast_signal_unique_index_name = "forecast_signal_unique_idx"
+        if forecast_signal_unique_index_name not in forecast_signals_indexes:
+            await forecast_signals_collection.create_index(
+                [
+                    ("asset_symbol", pymongo.ASCENDING),
+                    ("chain_id", pymongo.ASCENDING),
+                    ("signal_type", pymongo.ASCENDING),
+                    ("forecast_timestamp", pymongo.DESCENDING) # Allows querying latest forecast for a type
+                ],
+                name=forecast_signal_unique_index_name,
+                unique=False # Not strictly unique as details might differ for same timestamp temporarily
+            )
+            logger.info(f"Created index '{forecast_signal_unique_index_name}' on '{FORECAST_SIGNALS_COLLECTION_NAME}' (async).")
+
+        forecast_signal_last_updated_index_name = "forecast_signal_last_updated_idx"
+        if forecast_signal_last_updated_index_name not in forecast_signals_indexes:
+            await forecast_signals_collection.create_index([("last_updated", pymongo.DESCENDING)], name=forecast_signal_last_updated_index_name)
+            logger.info(f"Created index '{forecast_signal_last_updated_index_name}' on forecast_signals 'last_updated' field (async).")
+            
         # No explicit return needed as it sets global 'db'
     except ConnectionFailure as e:
         logger.error(f"MongoDB async connection failed: {e}")
@@ -148,16 +178,11 @@ async def get_ohlcv_from_db(
     quote_token_address: str,
     period_seconds: int,
     timeframe: str
-) -> Optional[List[Dict[str, Any]]]:
+) -> Optional[Dict[str, Any]]:
     global db 
     if db is None:
         logger.error("Async database connection not available for get_ohlcv_from_db. Connection should be established at startup.")
-        # Optionally, you could try to connect here, but it's better handled by startup.
-        # await connect_to_mongo() # This might lead to issues if called concurrently
-        # if db is None:
-        #     logger.error("Failed to connect to DB on demand for get_ohlcv_from_db.")
-        #     return None
-        return None # Or raise an exception
+        return None
 
     collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
     query = {
@@ -165,7 +190,7 @@ async def get_ohlcv_from_db(
         "base_token_address": base_token_address.lower(),
         "quote_token_address": quote_token_address.lower(),
         "period_seconds": period_seconds,
-        "timeframe": timeframe  # Add timeframe to match storage structure
+        "timeframe": timeframe
     }
     
     logger.debug(f"Querying DB with: {query}")
@@ -176,26 +201,34 @@ async def get_ohlcv_from_db(
             logger.debug(f"Found document in DB: {document.get('_id', 'no_id')} with last_updated: {document.get('last_updated', 'no_timestamp')}")
             stored_data = StoredOHLCVData(**document)
             
-            if stored_data.timeframe == "hourly":
-                cache_duration = timedelta(seconds=CACHE_DURATION_HOURLY_SECONDS)
-            elif stored_data.timeframe == "daily":
-                cache_duration = timedelta(seconds=CACHE_DURATION_DAILY_SECONDS)
-            else:
-                cache_duration = timedelta(seconds=CACHE_DURATION_DAILY_SECONDS)
+            # Determine the effective cache duration for this specific timeframe
+            # This duration is for the service to consider data "fresh enough" for its own short-term caching logic
+            # The 24-hour logic will be handled by the caller.
+            if stored_data.timeframe in ["hourly", "min15", "min5", "hour4"]: # More frequent updates for shorter timeframes
+                internal_cache_duration_seconds = CACHE_DURATION_HOURLY_SECONDS
+            else: # "daily", "week", "month"
+                internal_cache_duration_seconds = CACHE_DURATION_DAILY_SECONDS
+            
+            cache_duration = timedelta(seconds=internal_cache_duration_seconds)
 
             last_updated_aware = stored_data.last_updated
             if last_updated_aware.tzinfo is None:
                  last_updated_aware = last_updated_aware.replace(tzinfo=timezone.utc)
 
-            if datetime.now(timezone.utc) - last_updated_aware < cache_duration:
-                logger.info(f"Found fresh OHLCV data in DB (async) for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}).")
-                return [candle.model_dump() for candle in stored_data.ohlcv_candles]
-            else:
-                logger.info(f"Found stale OHLCV data in DB (async) for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}). Will re-fetch.")
-                return None
+            is_fresh_short_term = (datetime.now(timezone.utc) - last_updated_aware < cache_duration)
+            
+            status = "fresh" if is_fresh_short_term else "stale_short_term"
+            
+            logger.info(f"OHLCV data in DB for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}) is {status}. Last updated: {last_updated_aware}")
+            return {
+                "status": status,
+                "data": [candle.model_dump() for candle in stored_data.ohlcv_candles],
+                "last_updated": last_updated_aware, # Return the actual last_updated timestamp
+                "raw_document": document # For potential advanced merging later
+            }
         else:
             logger.info(f"No OHLCV data found in DB (async) for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}).")
-            return None
+            return None # No data at all
     except OperationFailure as e:
         logger.error(f"MongoDB async operation failure during get_ohlcv_from_db: {e}")
         return None
@@ -423,6 +456,95 @@ async def store_portfolio_in_cache(
     except Exception as e:
         logger.error(f"Unexpected error during store_portfolio_in_cache: {e}", exc_info=True)
 
+async def store_forecast_signals(
+    signals_to_store: List[ForecastSignalRecord]
+):
+    """
+    Stores a list of forecast signals in the forecast_signals collection.
+    Uses bulk insert for efficiency.
+    """
+    global db
+    if db is None:
+        logger.error("Async database connection not available for store_forecast_signals.")
+        return
+    if not signals_to_store:
+        logger.info("No forecast signals provided to store.")
+        return
+
+    collection: AsyncIOMotorCollection = db[FORECAST_SIGNALS_COLLECTION_NAME]
+    operations = []
+    for signal_record in signals_to_store:
+        # We will simply insert. If you need update logic, it's more complex.
+        # For simplicity, this will insert new documents for each signal generation event.
+        # Querying for the "latest" signal of a type for an asset would be done by sorting by forecast_timestamp.
+        operations.append(pymongo.InsertOne(signal_record.model_dump(by_alias=True)))
+    
+    try:
+        if operations:
+            result = await collection.bulk_write(operations, ordered=False)
+            logger.info(f"Stored {result.inserted_count} forecast signals in DB. Matched: {result.matched_count}, Modified: {result.modified_count}, Upserted: {result.upserted_count}")
+        else:
+            logger.info("No valid forecast signal operations to perform.")
+    except pymongo.errors.BulkWriteError as bwe:
+        logger.error(f"Bulk write error during store_forecast_signals: {bwe.details}")
+    except Exception as e:
+        logger.error(f"Unexpected error during store_forecast_signals: {e}", exc_info=True)
+
+async def get_recent_forecast_signals(
+    asset_symbol_global: str,
+    chain_id: int, # Original chain_id of the asset for an exact match
+    max_forecast_age_hours: int = 4 # e.g., forecasts older than 4 hours are stale
+) -> Optional[List[ForecastSignalRecord]]:
+    """
+    Retrieves recent forecast signals for a specific asset from the forecast_signals collection.
+    """
+    global db
+    if db is None:
+        logger.error("Async database connection not available for get_recent_forecast_signals.")
+        return None
+
+    collection: AsyncIOMotorCollection = db[FORECAST_SIGNALS_COLLECTION_NAME]
+    
+    # Calculate the earliest acceptable forecast timestamp
+    earliest_acceptable_time = datetime.now(timezone.utc) - timedelta(hours=max_forecast_age_hours)
+    earliest_acceptable_timestamp_sec = int(earliest_acceptable_time.timestamp())
+
+    query = {
+        "asset_symbol": asset_symbol_global,
+        "chain_id": chain_id, # Ensure we match the asset on its original chain
+        "forecast_timestamp": {"$gte": earliest_acceptable_timestamp_sec}
+    }
+    
+    logger.debug(f"Querying recent forecast signals with: {query}")
+    
+    signals_cursor = collection.find(query).sort("forecast_timestamp", pymongo.DESCENDING)
+    
+    all_recent_signals_for_asset = []
+    async for doc in signals_cursor:
+        all_recent_signals_for_asset.append(ForecastSignalRecord(**doc))
+    
+    if not all_recent_signals_for_asset:
+        logger.info(f"No recent forecast signals found in DB for {asset_symbol_global} (chain {chain_id}) within last {max_forecast_age_hours} hours.")
+        return None
+
+    # Find the latest forecast_timestamp among the retrieved signals
+    latest_forecast_batch_timestamp = 0
+    if all_recent_signals_for_asset:
+        latest_forecast_batch_timestamp = max(s.forecast_timestamp for s in all_recent_signals_for_asset)
+    
+    # Filter to include only signals from that very latest batch
+    signals_from_latest_batch = [
+        s for s in all_recent_signals_for_asset if s.forecast_timestamp == latest_forecast_batch_timestamp
+    ]
+
+    if signals_from_latest_batch:
+        logger.info(f"Found {len(signals_from_latest_batch)} recent signals from batch @ {latest_forecast_batch_timestamp} for {asset_symbol_global} (chain {chain_id}).")
+        return signals_from_latest_batch
+    else:
+        # This case should be rare if all_recent_signals_for_asset was populated
+        logger.info(f"No signals found matching the latest batch timestamp for {asset_symbol_global}, though recent signals were present.")
+        return None
+
 async def close_mongo_connection():
     """Closes the MongoDB connection asynchronously if it's open."""
     global mongo_client, db
@@ -432,3 +554,124 @@ async def close_mongo_connection():
         mongo_client = None
     # Ensure db is also None if client is None / closed
     db = None
+
+async def get_mvo_data_from_db(
+    asset_identifiers: List[Dict[str, Any]],
+    expected_return_signal_type: Optional[str] = None,  # Make optional
+    ohlcv_history_points: int = 100,
+    fallback_er_if_signal_missing: float = 0.0,
+    fetch_expected_returns: bool = True  # Add flag to skip ER fetching
+) -> Tuple[Optional[pd_Series], Optional[Dict[str, pd_DataFrame]]]:
+    """
+    Fetches expected returns from forecast signals and/or historical close prices for MVO.
+    """
+    global db
+    if db is None:
+        logger.error("Async database connection not available for get_mvo_data_from_db.")
+        return None, None
+
+    expected_returns_data = {}
+    historical_closes_data = {}
+
+    # --- 1. Fetch Expected Returns from Forecast Signals (if requested) ---
+    if fetch_expected_returns and expected_return_signal_type:
+        asset_symbols_query_list = list(set(aid["asset_symbol_global"] for aid in asset_identifiers))
+        chain_ids_query_list = list(set(aid["chain_id"] for aid in asset_identifiers))
+
+        if asset_symbols_query_list and chain_ids_query_list:
+            pipeline = [
+                {
+                    "$match": {
+                        "asset_symbol": {"$in": asset_symbols_query_list},
+                        "chain_id": {"$in": chain_ids_query_list},
+                        "signal_type": expected_return_signal_type
+                    }
+                },
+                {"$sort": {"asset_symbol": 1, "chain_id": 1, "forecast_timestamp": -1}},
+                {
+                    "$group": {
+                        "_id": {"asset_symbol": "$asset_symbol"},
+                        "latest_signal_doc": {"$first": "$$ROOT"}
+                    }
+                },
+                {"$replaceRoot": {"newRoot": "$latest_signal_doc"}}
+            ]
+            try:
+                forecast_signals_collection: AsyncIOMotorCollection = db[FORECAST_SIGNALS_COLLECTION_NAME]
+                cursor = forecast_signals_collection.aggregate(pipeline)
+                async for signal_doc in cursor:
+                    asset_symbol = signal_doc.get("asset_symbol")
+                    er_value = signal_doc.get("confidence") 
+                    if asset_symbol and er_value is not None:
+                        expected_returns_data[asset_symbol] = float(er_value)
+                logger.info(f"Fetched expected returns for {len(expected_returns_data)} assets using signal type '{expected_return_signal_type}'.")
+            except Exception as e:
+                logger.error(f"Error fetching expected returns from signals: {e}", exc_info=True)
+
+    # --- 2. Fetch Historical Close Prices for Covariance ---
+    ohlcv_collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
+    
+    # Batch fetch for better performance
+    batch_size = 50
+    for i in range(0, len(asset_identifiers), batch_size):
+        batch = asset_identifiers[i:i+batch_size]
+        
+        # Build OR query for batch
+        or_conditions = []
+        for asset_info in batch:
+            or_conditions.append({
+                "chain_id": asset_info["chain_id"],
+                "base_token_address": asset_info["base_token_address"].lower(),
+                "quote_token_address": asset_info["quote_token_address"].lower(),
+                "period_seconds": asset_info["period_seconds"],
+                "timeframe": asset_info["timeframe"]
+            })
+        
+        if or_conditions:
+            query = {"$or": or_conditions}
+            projection = {"ohlcv_candles": {"$slice": -ohlcv_history_points}, "_id": 0, 
+                         "base_token_address": 1, "quote_token_address": 1, "chain_id": 1}
+            
+            try:
+                cursor = ohlcv_collection.find(query, projection)
+                async for doc in cursor:
+                    # Find the matching asset identifier
+                    for asset_info in batch:
+                        if (doc.get("chain_id") == asset_info["chain_id"] and
+                            doc.get("base_token_address", "").lower() == asset_info["base_token_address"].lower() and
+                            doc.get("quote_token_address", "").lower() == asset_info["quote_token_address"].lower()):
+                            
+                            asset_symbol = asset_info["asset_symbol_global"]
+                            if "ohlcv_candles" in doc and doc["ohlcv_candles"]:
+                                candles_df_data = [
+                                    {"timestamp": c.get("time"), "close": c.get("close")} 
+                                    for c in doc["ohlcv_candles"] 
+                                    if c.get("time") is not None and c.get("close") is not None
+                                ]
+                                if candles_df_data:
+                                    df = pd_DataFrame(candles_df_data)
+                                    df.sort_values(by="timestamp", inplace=True, ignore_index=True)
+                                    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+                                    df.dropna(subset=['close'], inplace=True)
+                                    if not df.empty:
+                                        historical_closes_data[asset_symbol] = df[['timestamp', 'close']]
+                            break
+            except Exception as e:
+                logger.error(f"Error batch fetching historical closes: {e}", exc_info=True)
+
+    # Only create expected returns series if we fetched them
+    if fetch_expected_returns:
+        # Fill missing expected returns with fallback
+        for aid in asset_identifiers:
+            symbol = aid["asset_symbol_global"]
+            if symbol not in expected_returns_data:
+                logger.warning(f"No expected return found for {symbol}. Using fallback: {fallback_er_if_signal_missing}")
+                expected_returns_data[symbol] = fallback_er_if_signal_missing
+                
+        final_expected_returns_series = pd_Series(expected_returns_data, name="expected_returns") if expected_returns_data else pd_Series(dtype=float, name="expected_returns")
+    else:
+        final_expected_returns_series = pd_Series(dtype=float, name="expected_returns")
+
+    logger.info(f"Fetched historical closes for {len(historical_closes_data)} assets with history points: {ohlcv_history_points}.")
+    
+    return final_expected_returns_series, historical_closes_data
