@@ -64,12 +64,12 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground antialiased;
     /* Ensure dark mode is applied by default if no theme switcher is present */
     /* You can also manage this with a theme provider in _app.tsx */
   }
   html {
-    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    font-family: 'Nunito', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
   }
   html.dark body {
     @apply bg-background text-foreground;
@@ -100,6 +100,6 @@
     --foreground-hsl: var(--foreground);
     background-color: hsl(var(--background-hsl));
     color: hsl(var(--foreground-hsl));
-    @apply font-sans antialiased;
+    @apply antialiased;
   }
 }
