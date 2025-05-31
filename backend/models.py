@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
 
@@ -24,3 +25,23 @@ class FusionOrderBuildRequest(BaseModel):
 class FusionOrderSubmitRequest(BaseModel):
     src_chain_id: int = Field(..., description="Source chain ID")
     signed_order_payload: Dict[str, Any] = Field(..., description="Signed order payload")
+
+
+@dataclass
+class Signal:
+    asset_symbol: str
+    signal_type: str
+    confidence: float
+    details: Dict[str, Any]
+    timestamp: int
+    chain_id: Optional[int] = None
+    token_address: Optional[str] = None
+
+@dataclass
+class OHLCVDataPoint:
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float 

@@ -14,3 +14,6 @@ uvicorn>=0.27.0
 pymongo>=4.0.0
 motor>=3.0.0
 httpx>=0.27.0
+talib>=0.4.24
+arch>=5.0.0
+TA-Lib>=0.4.24
