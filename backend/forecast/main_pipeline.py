@@ -9,8 +9,8 @@ import asyncio # Added asyncio
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import Signal, OHLCVDataPoint
-from services.mongo_service import connect_to_mongo, close_mongo_connection, get_ohlcv_from_db
+from models import Signal
+from services.mongo_service import get_ohlcv_from_db
 from configs import COMMON_STABLECOIN_SYMBOLS
 
 # Import the forecast functions with correct relative paths
@@ -334,7 +334,11 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
 
     # 4. Calculate MVO inputs
     logger.info("\nCalculating MVO inputs for selected assets...")
-    mvo_inputs = calculate_mvo_inputs(portfolio_ohlcv_data, annualization_factor=annualization_factor)
+    mvo_inputs = calculate_mvo_inputs(
+        portfolio_ohlcv_data, # Pass portfolio_ohlcv_data positionally
+        ranked_assets_df=ranked_assets_df,
+        annualization_factor=annualization_factor
+    )
 
     if not mvo_inputs["expected_returns"].empty and not mvo_inputs["covariance_matrix"].empty:
         logger.info(f"Expected Returns:\n{mvo_inputs['expected_returns']}")

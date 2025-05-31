@@ -59,7 +59,7 @@ SCREENING_TIMEOUT_SECONDS = 180 # Increased timeout for screening + OHLCV fetchi
 @app.get("/screen_tokens/{chain_id}", response_model=List[Dict[str, Any]])
 async def screen_tokens_on_chain(
     chain_id: int,
-    timeframe: str = Query("daily", enum=["hourly", "daily"], description="Timeframe for OHLCV data ('daily', 'hourly').")
+    timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data.")
 ):
     """
     Screens tokens on a given chain:
@@ -80,13 +80,24 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
     chain_name = CHAIN_ID_TO_NAME.get(chain_id, "Unknown Chain")
     
     # Determine period_seconds from timeframe
-    if timeframe.lower() == "hourly":
-        period_seconds = PERIOD_HOURLY_SECONDS
-    elif timeframe.lower() == "daily":
-        period_seconds = PERIOD_DAILY_SECONDS
+    if timeframe.lower() == "min5":
+        period_seconds = 300
+    elif timeframe.lower() == "min15":
+        period_seconds = 900
+    elif timeframe.lower() == "hour":
+        period_seconds = 3600
+    elif timeframe.lower() == "hour4":
+        period_seconds = 14400
+    elif timeframe.lower() == "day":
+        period_seconds = 86400
+    elif timeframe.lower() == "week":
+        period_seconds = 604800
+    elif timeframe.lower() == "month":
+        period_seconds = 2592000 # Approx 30 days
     else:
-        logger.warning(f"Invalid timeframe '{timeframe}' received. Defaulting to daily (86400s).")
-        period_seconds = PERIOD_DAILY_SECONDS 
+        logger.warning(f"Invalid timeframe '{timeframe}' received. Defaulting to day (86400s).")
+        period_seconds = 86400
+        timeframe = "day" # Ensure timeframe string is also defaulted for consistency
         
     logger.info(f"Starting token screening for chain: {chain_name} (ID: {chain_id}) with timeframe='{timeframe}' (period: {period_seconds}s) - Timeout: {SCREENING_TIMEOUT_SECONDS}s")
 
@@ -228,7 +239,11 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
 
             try:
                 ohlcv_api_response = await one_inch_data_service.get_ohlcv_data(
-                    base_token_address, quote_address, period_seconds, chain_id
+                    base_token_address=base_token_address, 
+                    quote_token_address=quote_address, 
+                    timeframe_granularity=timeframe,
+                    chain_id=chain_id,
+                    limit=1000
                 )
                 if ohlcv_api_response and "data" in ohlcv_api_response:
                     api_candles = ohlcv_api_response["data"]
@@ -376,7 +391,7 @@ async def root():
 @app.post("/portfolio/optimize/{chain_id}", summary="Screen, Forecast, and Optimize Portfolio", response_model=Dict[str, Any])
 async def get_optimized_portfolio_for_chain(
     chain_id: int,
-    timeframe: str = Query("daily", enum=["hourly", "daily"], description="Timeframe for OHLCV data ('daily', 'hourly')."),
+    timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data."),
     num_top_assets: int = Query(10, ge=2, le=20, description="Number of top assets for MVO (2-20). Min 2 for MVO."),
     mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility"], description="MVO objective function."),
     risk_free_rate: float = Query(0.02, description="Risk-free rate for Sharpe ratio calculation."),
@@ -462,20 +477,37 @@ async def get_optimized_portfolio_for_chain(
     logger.info(f"Portfolio optimization pipeline: Prepared {len(asset_identifiers)} valid assets for forecasting from {valid_screened_assets_count} screened results.")
 
     # 3. Determine period_seconds and annualization_factor
-    if timeframe.lower() == "hourly":
-        period_seconds = PERIOD_HOURLY_SECONDS
-        default_annual_factor = 365 * 24 
-    elif timeframe.lower() == "daily":
-        period_seconds = PERIOD_DAILY_SECONDS
-        default_annual_factor = 365 
-    else: # Should not happen due to Query enum, but as a fallback
+    timeframe_lower = timeframe.lower()
+    if timeframe_lower == "min5":
+        period_seconds = 300
+        default_annual_factor = 365 * 24 * 12
+    elif timeframe_lower == "min15":
+        period_seconds = 900
+        default_annual_factor = 365 * 24 * 4
+    elif timeframe_lower == "hour":
+        period_seconds = 3600
+        default_annual_factor = 365 * 24
+    elif timeframe_lower == "hour4":
+        period_seconds = 14400
+        default_annual_factor = 365 * 6
+    elif timeframe_lower == "day":
+        period_seconds = 86400
+        default_annual_factor = 365
+    elif timeframe_lower == "week":
+        period_seconds = 604800
+        default_annual_factor = 52
+    elif timeframe_lower == "month":
+        period_seconds = 2592000 # Approx 30 days
+        default_annual_factor = 12
+    else: 
         logger.warning(f"Invalid timeframe '{timeframe}' in optimize endpoint. Defaulting to daily period and annualization.")
-        period_seconds = PERIOD_DAILY_SECONDS
-        default_annual_factor = 252 # Common trading days
-        
+        period_seconds = 86400
+        default_annual_factor = 365
+        timeframe = "day" # Ensure timeframe string is also defaulted
+
     annualization_factor = annualization_factor_override if annualization_factor_override is not None else default_annual_factor
     
-    logger.info(f"Portfolio optimization pipeline: Using period_seconds={period_seconds}, annualization_factor={annualization_factor}.")
+    logger.info(f"Portfolio optimization pipeline: Using period_seconds={period_seconds}, timeframe_api_string='{timeframe_lower}', annualization_factor={annualization_factor}.")
 
     # 4. Run the forecast-to-portfolio pipeline
     try:

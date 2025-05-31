@@ -30,7 +30,8 @@ def _portfolio_volatility(weights: np.ndarray, expected_returns: pd.Series, cov_
     return _calculate_portfolio_performance(weights, expected_returns, cov_matrix)[1]
 
 def calculate_mvo_inputs(
-    ohlcv_data_dict: Dict[str, pd.DataFrame], # Dict of {symbol: ohlcv_df}
+    ohlcv_data: Dict[str, pd.DataFrame], # Assuming this was the original first arg
+    ranked_assets_df: Optional[pd.DataFrame] = None, # Add this new argument
     annualization_factor: int = 252 # Trading days in a year
 ) -> Dict[str, Any]:
     """
@@ -40,7 +41,7 @@ def calculate_mvo_inputs(
     all_returns_df = pd.DataFrame()
     valid_symbols_for_mvo = []
 
-    for symbol, df in ohlcv_data_dict.items():
+    for symbol, df in ohlcv_data.items():
         if 'close' in df.columns and not df['close'].empty:
             # Use log returns for calculations, can also use simple returns
             log_returns = np.log(df['close'] / df['close'].shift(1)).dropna()
