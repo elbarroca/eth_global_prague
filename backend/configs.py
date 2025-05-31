@@ -1,5 +1,6 @@
 # app/core/config.py
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv() # Load variables from .env file
@@ -7,30 +8,43 @@ load_dotenv() # Load variables from .env file
 ONE_INCH_API_KEY = os.getenv("ONE_INCH_API_KEY")
 
 NATIVE_ASSET_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-
 COMMON_STABLECOIN_SYMBOLS = {
     "USDT", "USDC", "USDS", "USDE", "DAI", "SUSD", "USD1", "FDUSD", "PYUSD", "USDX",
-    "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "PAX",
+    "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD", "PAX", "EURA", "EURS", "USDC.E",
+    "USDT.E", "USDS_2", "USDC_2", "USDT_2", "USDC.E", "USDT.E", "USDC_E", "USDT_E", "ALUSD",
+    "DOLA", "USD+", "USDPLUS", "USD_PLUS", "MIMATIC", "MAI", "AGEUR", "JEUR", "CEUR",
+    "USDD", "USTC", "USDH", "USDN", "USDK", "USDJ", "USDR", "USDS", "USDT", "USDC", "SUSDS",
+    "EURC", "DAI.E", "CUSDC", "USDM"
 }
 # Chain IDs (can be expanded)
 ETHEREUM_CHAIN_ID = 1
-BASE_CHAIN_ID = 8453
-ARBITRUM_CHAIN_ID = 42161
 POLYGON_CHAIN_ID = 137
-OPTIMISM_CHAIN_ID = 10
-AVALANCHE_CHAIN_ID = 43114
 ZKSYNC_ERA_CHAIN_ID = 324
-LINEA_CHAIN_ID = 59144 # Added Linea
+BINANCE_CHAIN_ID = 56
+ARBITRUM_CHAIN_ID = 42161
+AVALANCHE_CHAIN_ID = 43114
+OPTIMISM_CHAIN_ID = 10
+FANTOM_CHAIN_ID = 250
+GNOSIS_CHAIN_ID = 100
+BASE_CHAIN_ID = 8453
+LINEA_CHAIN_ID = 59144
+SONIC_CHAIN_ID = 146
+UNICHAIN_CHAIN_ID = 130
 
 CHAIN_ID_TO_NAME = {
     ETHEREUM_CHAIN_ID: "Ethereum",
-    BASE_CHAIN_ID: "Base",
-    ARBITRUM_CHAIN_ID: "Arbitrum",
     POLYGON_CHAIN_ID: "Polygon",
-    OPTIMISM_CHAIN_ID: "Optimism",
-    AVALANCHE_CHAIN_ID: "Avalanche",
     ZKSYNC_ERA_CHAIN_ID: "zkSync Era",
+    BINANCE_CHAIN_ID: "Binance",
+    ARBITRUM_CHAIN_ID: "Arbitrum",
+    AVALANCHE_CHAIN_ID: "Avalanche",
+    OPTIMISM_CHAIN_ID: "Optimism",
+    FANTOM_CHAIN_ID: "Fantom",
+    GNOSIS_CHAIN_ID: "Gnosis",
+    BASE_CHAIN_ID: "Base",
     LINEA_CHAIN_ID: "Linea",
+    SONIC_CHAIN_ID: "Sonic",
+    UNICHAIN_CHAIN_ID: "Unichain",
 }
 
 # USDC Addresses (ensure these are the ones preferred by the Charts API for each chain)
@@ -58,3 +72,6 @@ WETH_ETHEREUM_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 PERIOD_HOURLY_SECONDS = 3600
 PERIOD_4HOURLY_SECONDS = 14400
 PERIOD_DAILY_SECONDS = 86400
+
+BLOCKSCOUT_SEPOLIA_API_BASE_URL: str = "https://eth-sepolia.blockscout.com/api"
+BLOCKSCOUT_ROOTSTOCK_TESTNET_API_BASE_URL: Optional[str] = None # Example
