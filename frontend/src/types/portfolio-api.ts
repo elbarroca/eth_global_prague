@@ -6,6 +6,9 @@ export interface RankedAssetSummary {
   score: number;
   num_bullish: number;
   num_bearish: number;
+  chain_id: number;
+  base_token_address: string;
+  quote_token_address: string;
 }
 
 export interface OptimizedPortfolioDetails {

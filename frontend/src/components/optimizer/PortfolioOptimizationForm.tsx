@@ -28,7 +28,7 @@ import { PortfolioFormInputs, mvoObjectiveOptions, timeframeOptions, chainOption
 interface PortfolioOptimizationFormProps {
   onSubmit: (data: PortfolioFormInputs) => void;
   isLoading: boolean;
-  formMethods: UseFormReturn<PortfolioFormInputs>; // Allow passing full form methods
+  formMethods: UseFormReturn<PortfolioFormInputs, any, PortfolioFormInputs>;
 }
 
 export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps> = ({
@@ -36,31 +36,38 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
   isLoading,
   formMethods,
 }) => {
-  const { handleSubmit, control } = formMethods;
+  const { handleSubmit, control, watch } = formMethods;
+  const mvoObjective = watch("mvoObjective");
 
   return (
-    <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-xl font-semibold">
-          <Settings className="h-6 w-6 text-blue-600" />
-          Portfolio Optimization Parameters
+    <Card className="shadow-2xl transition-all duration-700 ease-out hover:shadow-3xl bg-gradient-to-br from-slate-800/90 via-slate-800/95 to-slate-900/90 border border-slate-600/50 backdrop-blur-sm text-gray-200 overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] via-transparent to-transparent pointer-events-none" />
+      <CardHeader className="relative">
+        <CardTitle className="flex items-center gap-3 text-2xl font-bold text-white tracking-tight">
+          <div className="p-2 rounded-xl bg-white/10 backdrop-blur-sm">
+            <Settings className="h-6 w-6 text-white" />
+          </div>
+          Portfolio Optimization
         </CardTitle>
-        <CardDescription>
-          Configure your preferences to tailor the portfolio optimization.
+        <CardDescription className="text-slate-300 text-base mt-2">
+          Configure your preferences to create the perfect portfolio strategy.
         </CardDescription>
       </CardHeader>
       <FormProvider {...formMethods}>
         <form onSubmit={handleSubmit(onSubmit)}>
-          <CardContent className="space-y-6 pt-4">
+          <CardContent className="space-y-10 pt-6 relative">
             <FormField
               control={control}
               name="chains"
               render={() => (
-                <FormItem>
-                  <div className="mb-3">
-                    <FormLabel className="text-md font-medium">Chains</FormLabel>
-                    <FormDescription>
-                      Select blockchains to include in the optimization.
+                <FormItem className="space-y-4">
+                  <div className="space-y-2">
+                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 bg-white rounded-full"></span>
+                      Blockchain Networks
+                    </FormLabel>
+                    <FormDescription className="text-slate-300 text-sm">
+                      Select the blockchain networks to include in your portfolio optimization.
                     </FormDescription>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -71,7 +78,7 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                         name="chains"
                         render={({ field }) => (
                           <FormItem
-                            className="flex flex-row items-center space-x-2 space-y-0 rounded-md border p-3 hover:bg-accent hover:text-accent-foreground transition-colors"
+                            className="flex flex-row items-center space-x-3 space-y-0 rounded-xl border border-slate-600/50 p-4 hover:bg-white/5 hover:border-white/20 transition-all duration-300 bg-slate-700/20 backdrop-blur-sm group cursor-pointer"
                           >
                             <FormControl>
                               <Checkbox
@@ -88,46 +95,51 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                                   }
                                   field.onChange(newValue);
                                 }}
+                                className="border-slate-400 data-[state=checked]:bg-white data-[state=checked]:border-white data-[state=checked]:text-slate-900 focus-visible:ring-white/50 transition-all duration-200"
                               />
                             </FormControl>
-                            <FormLabel className="font-normal text-sm flex items-center gap-1.5 cursor-pointer">
-                              <span className="text-lg">{chain.icon}</span> {chain.name}
+                            <FormLabel className="font-medium text-sm flex items-center gap-3 cursor-pointer text-white group-hover:text-white/90 transition-colors">
+                              <span className="text-xl">{chain.icon}</span> 
+                              <span>{chain.name}</span>
                             </FormLabel>
                           </FormItem>
                         )}
                       />
                     ))}
                   </div>
-                  <FormMessage />
+                  <FormMessage className="text-red-400" />
                 </FormItem>
               )}
             />
 
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-2 gap-8">
               <FormField
                 control={control}
                 name="mvoObjective"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-md font-medium">MVO Objective</FormLabel>
+                  <FormItem className="space-y-3">
+                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 bg-white rounded-full"></span>
+                      Optimization Strategy
+                    </FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select MVO objective" />
+                        <SelectTrigger className="bg-slate-700/30 border-slate-600/50 hover:border-white/30 focus:ring-white/50 text-white h-12 rounded-xl backdrop-blur-sm transition-all duration-300">
+                          <SelectValue placeholder="Choose your optimization strategy" />
                         </SelectTrigger>
                       </FormControl>
-                      <SelectContent>
+                      <SelectContent className="bg-slate-800/95 border-slate-600/50 text-white backdrop-blur-sm">
                         {mvoObjectiveOptions.map(option => (
-                          <SelectItem key={option.id} value={option.id}>
+                          <SelectItem key={option.id} value={option.id} className="focus:bg-white/10 text-white hover:bg-white/5 transition-colors">
                             {option.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <FormDescription>
-                      Mean-Variance Optimization strategy.
+                    <FormDescription className="text-slate-300 text-sm">
+                      Choose your preferred optimization approach for maximum returns.
                     </FormDescription>
-                    <FormMessage />
+                    <FormMessage className="text-red-400" />
                   </FormItem>
                 )}
               />
@@ -135,54 +147,62 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                 control={control}
                 name="timeframe"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-md font-medium">Timeframe</FormLabel>
+                  <FormItem className="space-y-3">
+                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 bg-white rounded-full"></span>
+                      Analysis Period
+                    </FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select timeframe" />
+                        <SelectTrigger className="bg-slate-700/30 border-slate-600/50 hover:border-white/30 focus:ring-white/50 text-white h-12 rounded-xl backdrop-blur-sm transition-all duration-300">
+                          <SelectValue placeholder="Select analysis timeframe" />
                         </SelectTrigger>
                       </FormControl>
-                      <SelectContent>
+                      <SelectContent className="bg-slate-800/95 border-slate-600/50 text-white backdrop-blur-sm">
                         {timeframeOptions.map(option => (
-                          <SelectItem key={option.id} value={option.id}>
+                          <SelectItem key={option.id} value={option.id} className="focus:bg-white/10 text-white hover:bg-white/5 transition-colors">
                             {option.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <FormDescription>
-                      Historical data analysis period.
+                    <FormDescription className="text-slate-300 text-sm">
+                      Historical data period for analysis (5 minutes to 1 month).
                     </FormDescription>
-                    <FormMessage />
+                    <FormMessage className="text-red-400" />
                   </FormItem>
                 )}
               />
             </div>
 
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-2 gap-8">
               <FormField
                 control={control}
-                name="riskFreeRate"
+                name="maxTokensPerChain"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-md font-medium">Risk-Free Rate (%)</FormLabel>
+                  <FormItem className="space-y-3">
+                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 bg-white rounded-full"></span>
+                      Assets Per Chain
+                    </FormLabel>
                     <FormControl>
                       <Input
                         type="number"
-                        placeholder="e.g., 2 for 2%"
-                        value={field.value !== undefined ? field.value * 100 : ''}
+                        placeholder="260 (recommended)"
+                        {...field}
                         onChange={e => {
-                            const val = parseFloat(e.target.value);
-                            field.onChange(isNaN(val) ? undefined : val / 100);
+                            const val = parseInt(e.target.value, 10);
+                            field.onChange(isNaN(val) ? undefined : val);
                         }}
-                        step="0.01"
+                        className="bg-slate-700/30 border-slate-600/50 placeholder:text-slate-400 focus:border-white/50 focus:ring-white/50 text-white h-12 rounded-xl backdrop-blur-sm transition-all duration-300"
                       />
                     </FormControl>
-                    <FormDescription>
-                      Annual rate for calculations (e.g., Sharpe Ratio). Default: 2%.
+                    <FormDescription className="text-slate-300 text-sm">
+                      Maximum assets to analyze per blockchain (10-500).
+                      <br />
+                      <span className="text-xs text-amber-400/80 font-medium">⚡ Higher values increase processing time</span>
                     </FormDescription>
-                    <FormMessage />
+                    <FormMessage className="text-red-400" />
                   </FormItem>
                 )}
               />
@@ -190,46 +210,60 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                 control={control}
                 name="targetReturn"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-md font-medium">Target Return (Optional, %)</FormLabel>
+                  <FormItem className="space-y-3">
+                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 bg-white rounded-full"></span>
+                      Target Return
+                      <span className="text-xs bg-slate-600/50 px-2 py-1 rounded-full text-slate-300 font-normal">Optional</span>
+                    </FormLabel>
                     <FormControl>
                       <Input
                         type="number"
-                        placeholder="e.g., 10 for 10%"
+                        placeholder="e.g., 15 for 15% annual return"
                         value={field.value !== undefined ? field.value * 100 : ''}
                         onChange={e => {
                             const val = parseFloat(e.target.value);
                             field.onChange(isNaN(val) ? undefined : val / 100);
                         }}
                         step="0.1"
+                        className="bg-slate-700/30 border-slate-600/50 placeholder:text-slate-400 focus:border-white/50 focus:ring-white/50 text-white h-12 rounded-xl backdrop-blur-sm transition-all duration-300"
                       />
                     </FormControl>
-                    <FormDescription>
-                      Desired annual return for specific MVO objectives.
+                    <FormDescription className="text-slate-300 text-sm">
+                      Desired annual return percentage for target-based strategies.
                     </FormDescription>
-                    <FormMessage />
+                    <FormMessage className="text-red-400" />
                   </FormItem>
                 )}
               />
             </div>
           </CardContent>
-          <CardFooter className="pt-2">
-            <Button type="submit" disabled={isLoading} className="w-full sm:w-auto text-base py-3 px-6 group">
-              {isLoading ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Optimizing...
-                </>
-              ) : (
-                <>
-                  Optimize Portfolio
-                  <BarChart className="ml-2 h-5 w-5 transition-transform duration-300 group-hover:translate-x-1" />
-                </>
-              )}
-            </Button>
+          <CardFooter className="pt-8 pb-8 relative">
+            <div className="w-full flex justify-center">
+              <Button 
+                type="submit" 
+                disabled={isLoading} 
+                className="bg-gradient-to-r from-white to-gray-100 hover:from-gray-100 hover:to-white text-slate-900 font-bold text-lg py-4 px-12 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-500 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none group relative overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                {isLoading ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-3 h-6 w-6 text-slate-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span className="relative z-10">Optimizing Portfolio...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="relative z-10 flex items-center">
+                      Optimize Portfolio
+                      <BarChart className="ml-3 h-6 w-6 transition-transform duration-300 group-hover:translate-x-1 group-hover:scale-110" />
+                    </span>
+                  </>
+                )}
+              </Button>
+            </div>
           </CardFooter>
         </form>
       </FormProvider>

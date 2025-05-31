@@ -48,17 +48,17 @@ export const useForecastSignals = ({
     setError(null);
 
     try {
-      const queryParams = new URLSearchParams({ asset_symbol: assetSymbol });
-      if (chainId) {
-        queryParams.append('chain_id', String(chainId));
+      let url = `${API_BASE_URL}/api/forecasts/signals?asset_symbol=${encodeURIComponent(assetSymbol)}`;
+      if (chainId !== null && chainId !== undefined) {
+        url += `&chain_id=${chainId}`;
       }
       if (signalType) {
-        queryParams.append('signal_type', signalType);
+        url += `&signal_type=${signalType}`;
       }
 
       // Example endpoint: /api/forecasts/signals?asset_symbol=...
       // You'll need to create this endpoint in your FastAPI backend
-      const response = await fetch(`${API_BASE_URL}/api/forecasts/signals?${queryParams.toString()}`);
+      const response = await fetch(url);
 
       if (!response.ok) {
         const errorData = await response.json();
