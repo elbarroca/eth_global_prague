@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Settings } from 'lucide-react';
-import { PortfolioFormInputs, chainOptions, mvoObjectiveOptions, timeframeOptions } from '@/types/portfolio-api';
+import { PortfolioFormInputs, mvoObjectiveOptions, timeframeOptions, chainOptions } from '@/types/portfolio-api';
 
 interface PortfolioOptimizationFormProps {
   onSubmit: (data: PortfolioFormInputs) => void;

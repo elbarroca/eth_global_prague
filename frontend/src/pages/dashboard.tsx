@@ -4,10 +4,8 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CreatePortfolioDialog } from '@/components/portfolio/CreatePortfolioDialog';
-import { PortfolioOverview } from '@/components/portfolio/PortfolioOverview';
 import { usePortfolioStore } from '@/stores/portfolio-store';
-import { ArrowLeft, Briefcase, Settings, BarChart, Database, Activity, PieChart as PieChartIcon } from 'lucide-react';
+import { ArrowLeft, Briefcase, Settings, BarChart, Database, Activity } from 'lucide-react';
 import { useAccount } from 'wagmi';
 import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
@@ -19,11 +17,13 @@ import { OverallRequestSummaryCard } from '@/components/optimizer/OverallRequest
 import { RankedAssetsSummaryCard } from '@/components/optimizer/RankedAssetsSummaryCard';
 import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedPortfolioDetailsCard';
 import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
+import { AssetDeepDiveCard } from '@/components/optimizer/AssetDeepDiveCard';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import {
   PortfolioApiResponse,
   PortfolioFormInputs,
+  RankedAssetSummary,
 } from '@/types/portfolio-api';
 
 // Define Zod schema for form validation (can be co-located or imported)
@@ -37,13 +37,14 @@ const portfolioFormSchema = z.object({
 
 const Dashboard: NextPage = () => {
   const { isConnected } = useAccount();
-  const { portfolios, activePortfolioId, setActivePortfolio } = usePortfolioStore();
-  const activePortfolio = portfolios.find(p => p.id === activePortfolioId);
+  // const { portfolios, activePortfolioId, setActivePortfolio } = usePortfolioStore(); // Commented out as section is removed
+  // const activePortfolio = portfolios.find(p => p.id === activePortfolioId); // Commented out
 
   const [portfolioData, setPortfolioData] = useState<PortfolioApiResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
+  const [selectedAssetForDeepDive, setSelectedAssetForDeepDive] = useState<RankedAssetSummary | null>(null);
 
   const formMethods = useForm<PortfolioFormInputs>({
     resolver: zodResolver(portfolioFormSchema),
@@ -136,7 +137,16 @@ const Dashboard: NextPage = () => {
       setPortfolioData(mockApiResponse);
       setIsLoading(false);
       setShowResults(true); // Show results after fetching
+      setSelectedAssetForDeepDive(null); // Clear any previous deep dive selection
     }, 1500); // Shorter delay for demo
+  };
+
+  const handleAssetSelect = (asset: RankedAssetSummary) => {
+    setSelectedAssetForDeepDive(asset);
+  };
+
+  const handleCloseDeepDive = () => {
+    setSelectedAssetForDeepDive(null);
   };
 
   const globalPortfolioData = portfolioData?.results_by_chain?.["global_cross_chain"];
@@ -145,7 +155,7 @@ const Dashboard: NextPage = () => {
   const resultsKey = portfolioData ? JSON.stringify(portfolioData.overall_request_summary.requested_chain_ids) + portfolioData.overall_request_summary.timeframe : 'no_results';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-gray-100">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 text-gray-100">
       <Head>
         <title>DeFi Portfolio Optimizer - AlphaScan</title>
         <meta
@@ -190,11 +200,13 @@ const Dashboard: NextPage = () => {
             </Card>
           ) : (
             <>
-              <PortfolioOptimizationForm 
-                onSubmit={onSubmit} 
-                isLoading={isLoading} 
-                formMethods={formMethods} 
-              />
+              {!showResults && (
+                <PortfolioOptimizationForm 
+                  onSubmit={onSubmit} 
+                  isLoading={isLoading} 
+                  formMethods={formMethods} 
+                />
+              )}
 
               {isLoading && (
                 <Card className="bg-slate-800/50 border-slate-700 shadow-lg">
@@ -224,107 +236,69 @@ const Dashboard: NextPage = () => {
                 </Card>
               )}
 
-              {showResults && globalPortfolioData && portfolioData && (
+              {showResults && portfolioData && (
                 <div key={resultsKey} className="space-y-6 mt-8">
-                  <OverallRequestSummaryCard summary={portfolioData.overall_request_summary} />
-                  <RankedAssetsSummaryCard assets={globalPortfolioData.data.ranked_assets_summary} chainName={globalPortfolioData.chain_name} />
-                  <OptimizedPortfolioDetailsCard details={globalPortfolioData.data.optimized_portfolio_details} chainName={globalPortfolioData.chain_name} />
-                  <MVOInputsSummaryCard summary={globalPortfolioData.data.mvo_inputs_summary} chainName={globalPortfolioData.chain_name} />
-                
-                  {/* Placeholder for Individual Asset Details - More detailed UI */}
-                  <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-800 bg-slate-800/50 border-slate-700">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
-                        <Database className="h-6 w-6 text-teal-400" />
-                        Individual Asset Deep Dive (Placeholder)
-                        </CardTitle>
-                      <CardDescription className="text-gray-400">Explore detailed analytics for assets in your optimized portfolio, powered by MongoDB data.</CardDescription>
-                    </CardHeader>
-                    <CardContent className="min-h-[150px] flex items-center justify-center">
-                      <p className="text-gray-500 italic">In-depth asset charts (OHLC, forecasts), previous performance, and comparative analytics will appear here.</p>
-                    </CardContent>
-                  </Card>
+                  <Button 
+                    onClick={() => {
+                      setShowResults(false); 
+                      setSelectedAssetForDeepDive(null); // Also clear deep dive selection when going back
+                    }}
+                    variant="outline" 
+                    className="mb-6 bg-slate-700 hover:bg-slate-600 border-slate-600 text-gray-200 hover:text-white">
+                    <ArrowLeft className="h-4 w-4 mr-1.5" />
+                    Back to Optimizer Form
+                  </Button>
 
-                  {/* Placeholder for Benchmark Comparison - More detailed UI */}
-                  <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-1000 bg-slate-800/50 border-slate-700">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
-                        <Activity className="h-6 w-6 text-cyan-400" />
-                        Performance vs. Benchmarks (Placeholder)
-                        </CardTitle>
-                      <CardDescription className="text-gray-400">Track your portfolio's performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
-                    </CardHeader>
-                    <CardContent className="min-h-[150px] flex items-center justify-center">
-                      <p className="text-gray-500 italic">Comparative performance charts and detailed metrics will be displayed here.</p>
-                    </CardContent>
-                  </Card>
+                  {selectedAssetForDeepDive && portfolioData ? (
+                    <AssetDeepDiveCard 
+                      asset={selectedAssetForDeepDive} 
+                      requestTimeframe={portfolioData.overall_request_summary.timeframe}
+                      onClose={handleCloseDeepDive} 
+                    />
+                  ) : (
+                    globalPortfolioData && (
+                      <>
+                        <OverallRequestSummaryCard summary={portfolioData.overall_request_summary} />
+                        <RankedAssetsSummaryCard 
+                          assets={globalPortfolioData.data.ranked_assets_summary} 
+                          chainName={globalPortfolioData.chain_name} 
+                          onAssetSelect={handleAssetSelect} // Pass the handler
+                        />
+                        <OptimizedPortfolioDetailsCard details={globalPortfolioData.data.optimized_portfolio_details} chainName={globalPortfolioData.chain_name} />
+                        <MVOInputsSummaryCard summary={globalPortfolioData.data.mvo_inputs_summary} chainName={globalPortfolioData.chain_name} />
+                      
+                        {/* Placeholder for Individual Asset Details - More detailed UI */}
+                        <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-800 bg-slate-800 border-slate-700">
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
+                              <Database className="h-6 w-6 text-teal-400" />
+                              General Information (Placeholder)
+                              </CardTitle>
+                            <CardDescription className="text-slate-400">Further details or global charts could appear here when no specific asset is selected for deep dive.</CardDescription>
+                          </CardHeader>
+                          <CardContent className="min-h-[150px] flex items-center justify-center">
+                            <p className="text-slate-500 italic">Click an asset in the &apos;Ranked Assets Summary&apos; to see a detailed deep dive.</p>
+                          </CardContent>
+                        </Card>
+
+                        {/* Placeholder for Benchmark Comparison - More detailed UI */}
+                        <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-1000 bg-slate-800 border-slate-700">
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
+                              <Activity className="h-6 w-6 text-cyan-400" />
+                              Performance vs. Benchmarks (Placeholder)
+                              </CardTitle>
+                            <CardDescription className="text-slate-400">Track your portfolio&apos;s performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
+                          </CardHeader>
+                          <CardContent className="min-h-[150px] flex items-center justify-center">
+                            <p className="text-slate-500 italic">Comparative performance charts and detailed metrics will be displayed here.</p>
+                          </CardContent>
+                        </Card>
+                      </>
+                    )
+                  )}
                 </div>
               )}
-
-              {/* Legacy Portfolio Management - consider how/if this fits */}
-              {!isLoading && !showResults && portfolios.length > 0 && (
-                 <Card className="mt-10 bg-slate-800/50 border-slate-700 shadow-lg">
-                    <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
-                            <PieChartIcon className="h-6 w-6 text-indigo-400"/>
-                            Existing Portfolios
-                        </CardTitle>
-                        <CardDescription className="text-gray-400">
-                            Manage your previously created portfolios or create a new one.
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-4">
-                            <div className="flex items-center gap-3">
-                                <h2 className="text-2xl font-bold text-gray-100">
-                                    {activePortfolio?.name || 'Select Portfolio'}
-                                </h2>
-                                {activePortfolio?.description && (
-                                <p className="text-gray-400 text-sm">{activePortfolio.description}</p>
-                                )}
-                            </div>
-                            <div className="flex items-center gap-2">
-                                {portfolios.length > 1 && (
-                                    <Select onValueChange={setActivePortfolio} value={activePortfolioId || ''}>
-                                        <SelectTrigger className="w-[180px] bg-slate-700 border-slate-600 text-gray-200">
-                                            <SelectValue placeholder="Switch Portfolio" />
-                                        </SelectTrigger>
-                                        <SelectContent className="bg-slate-800 border-slate-700 text-gray-200">
-                                            {portfolios.map((portfolio) => (
-                                                <SelectItem key={portfolio.id} value={portfolio.id} className="hover:bg-slate-700 focus:bg-slate-700">
-                                                {portfolio.name}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                )}
-                                <CreatePortfolioDialog /> { /* Ensure this dialog is styled for dark mode if not already */}
-                            </div>
-                        </div>
-                        {activePortfolio ? (
-                            <PortfolioOverview /> // This component might also need dark mode styling
-                        ) : (
-                        <div className="text-center py-10 text-gray-500">
-                            <p>Select a portfolio to view its overview, or create a new one.</p>
-                        </div>
-                        )}
-                    </CardContent>
-                 </Card>
-              )}
-               {portfolios.length === 0 && !isLoading && !showResults && isConnected && (
-                 <Card className="text-center py-12 sm:py-16 bg-slate-800/50 border-slate-700 shadow-xl">
-                    <CardHeader>
-                        <Briefcase className="h-12 w-12 mx-auto mb-5 text-purple-400" />
-                        <CardTitle className="text-2xl font-bold text-white mb-2">Create Your First Portfolio</CardTitle>
-                        <CardDescription className="text-md text-gray-400 mb-6 max-w-sm mx-auto">
-                            It looks like you don't have any portfolios yet. Get started by creating one!
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <CreatePortfolioDialog />
-                    </CardContent>
-                  </Card>
-               )}
             </>
           )}
         </div>
