@@ -59,12 +59,19 @@ class OHLVCRecord(BaseModel):
     close: float
 
 class StoredOHLCVData(BaseModel):
+    # _id: ObjectIdField  -> implied by MongoDB
     chain_id: int
     base_token_address: str
     quote_token_address: str
     period_seconds: int
-    timeframe: str # "hourly" or "daily"
-    ohlcv_candles: List[OHLVCRecord]
+    timeframe: str # e.g. "day", "hour", "min15"
+    
+    # New fields:
+    base_token_symbol: str 
+    quote_token_symbol: str # e.g., "USDC", "USDT"
+    chain_name: str 
+
+    ohlcv_candles: List[OHLVCRecord] = Field(default_factory=list)
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class PortfolioWeights(BaseModel):
@@ -108,3 +115,17 @@ class SingleChainPortfolioOptimizationResult(BaseModel):
 class CrossChainPortfolioResponse(BaseModel):
     results_by_chain: Dict[str, SingleChainPortfolioOptimizationResult] # Chain ID as string key
     overall_request_summary: Dict[str, Any]
+
+class StoredCrossChainPortfolioData(BaseModel):
+    request_chain_ids_str: str
+    request_timeframe: str
+    request_max_tokens_per_chain: int
+    request_mvo_objective: str
+    request_risk_free_rate: float
+    request_annualization_factor_override: Optional[int] = None
+    request_target_return: Optional[float] = None
+    
+    # The actual response data to cache
+    response_data: CrossChainPortfolioResponse
+    
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

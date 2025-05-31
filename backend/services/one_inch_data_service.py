@@ -4,7 +4,8 @@ import os
 import time
 import httpx
 import asyncio
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from async_lru import alru_cache
 
 # --- Logging Configuration ---
 logger = logging.getLogger(__name__)
@@ -292,7 +293,8 @@ async def get_cross_prices_data(chain_id: int, token0_address: str, token1_addre
     logger.info(f"Requesting Portfolio API v2 async with params: {params}")
     return await _make_1inch_api_request(PORTFOLIO_CROSS_PRICES_API_URL, params=params, api_description=f"1inch Portfolio API v2 (Cross Prices {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
 
-async def fetch_1inch_whitelisted_tokens(chain_id_filter: int = None) -> list[dict]:
+@alru_cache(maxsize=32, ttl=60*15)
+async def fetch_1inch_whitelisted_tokens(chain_id_filter: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Fetches 1inch whitelisted multi-chain tokens asynchronously, optionally filtering by a specific chainId.
     The endpoint returns data for all chains it supports; filtering is done client-side.

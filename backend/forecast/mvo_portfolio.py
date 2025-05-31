@@ -62,7 +62,7 @@ def calculate_mvo_inputs(
             
     if not returns_dict or len(returns_dict) < 2: # Need at least two assets for covariance
         logger.error("Not enough valid assets with returns data to calculate MVO inputs.")
-        return {"expected_returns": pd.Series(dtype=float), "covariance_matrix": pd.DataFrame(), "valid_symbols": []}
+        return {"expected_returns": pd.Series(dtype=float), "covariance_matrix": pd.DataFrame(), "valid_symbols": [], "historical_period_returns_df": pd.DataFrame()}
 
     # Use pd.concat instead of iteratively assigning columns to avoid fragmentation
     all_returns_df = pd.concat(returns_dict, axis=1)
@@ -74,12 +74,14 @@ def calculate_mvo_inputs(
     return {
         "expected_returns": expected_returns, # pd.Series
         "covariance_matrix": covariance_matrix, # pd.DataFrame
-        "valid_symbols": valid_symbols_for_mvo # List of symbols used
+        "valid_symbols": valid_symbols_for_mvo, # List of symbols used
+        "historical_period_returns_df": all_returns_df # Added for CVaR calculation
     }
 
 def optimize_portfolio_mvo(
     expected_returns: pd.Series,
     covariance_matrix: pd.DataFrame,
+    historical_period_returns_df: Optional[pd.DataFrame] = None, # Added for CVaR
     risk_free_rate: float = 0.02,
     target_return: Optional[float] = None, # For efficient frontier point
     objective: str = "maximize_sharpe" # or "minimize_volatility" or "maximize_return"
@@ -202,11 +204,37 @@ def optimize_portfolio_mvo(
     opt_return, opt_volatility = _calculate_portfolio_performance(full_weights.values, expected_returns, covariance_matrix)
     sharpe_ratio = (opt_return - risk_free_rate) / opt_volatility if opt_volatility > 1e-9 else 0
 
+    # Calculate CVaR (e.g., 95% Historical CVaR)
+    cvar_95 = None
+    if historical_period_returns_df is not None and not historical_period_returns_df.empty:
+        # Ensure historical returns columns match the assets in full_weights
+        aligned_returns_df = historical_period_returns_df.reindex(columns=full_weights.index).fillna(0.0)
+        if not aligned_returns_df.empty:
+            portfolio_historical_returns = aligned_returns_df.dot(full_weights)
+            if not portfolio_historical_returns.empty:
+                # CVaR is the average of returns in the worst q-th percentile
+                confidence_level = 0.95
+                var_95 = portfolio_historical_returns.quantile(1 - confidence_level) # This is VaR (value at risk)
+                # CVaR is the expected return given that the return is less than or equal to VaR
+                cvar_95_val = portfolio_historical_returns[portfolio_historical_returns <= var_95].mean()
+                if pd.notna(cvar_95_val):
+                    cvar_95 = round(cvar_95_val, 6)
+                    logger.info(f"Calculated CVaR (95%): {cvar_95}")
+                else:
+                    logger.warning("CVaR calculation resulted in NaN, possibly due to insufficient data points beyond VaR.")
+            else:
+                logger.warning("Portfolio historical returns are empty, cannot calculate CVaR.")
+        else:
+            logger.warning("Aligned historical returns DataFrame is empty, cannot calculate CVaR.")
+    else:
+        logger.warning("Historical period returns not provided or empty, cannot calculate CVaR.")
+
     return {
         "weights": non_zero_weights,  # Only return non-zero weights
         "expected_annual_return": round(opt_return, 6),
         "annual_volatility": round(opt_volatility, 6),
         "sharpe_ratio": round(sharpe_ratio, 6),
+        "cvar_95_historical_period": cvar_95, # Added CVaR
         "total_assets_considered": len(assets),
         "assets_with_allocation": len(non_zero_weights)
     }

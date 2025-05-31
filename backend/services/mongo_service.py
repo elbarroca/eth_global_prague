@@ -6,9 +6,10 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
-from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfolioData, ForecastSignalRecord
+from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfolioData, ForecastSignalRecord, CrossChainPortfolioResponse, StoredCrossChainPortfolioData
 from pandas import Series as pd_Series, DataFrame as pd_DataFrame
 import pandas as pd
+from pydantic import BaseModel, Field
 
 import asyncio
 
@@ -28,11 +29,13 @@ DATABASE_NAME = os.getenv('DATABASE_NAME')
 OHLCV_COLLECTION_NAME = "ohlcv_data"
 PORTFOLIO_COLLECTION_NAME = "portfolio_cache"
 FORECAST_SIGNALS_COLLECTION_NAME = "forecast_signals"
+CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME = "cross_chain_portfolio_cache"
 
 # Cache durations
 CACHE_DURATION_HOURLY_SECONDS = 30 * 60  # 30 minutes (was 1 hour)
 CACHE_DURATION_DAILY_SECONDS = 4 * 60 * 60  # 4 hours (was 24 hours)
 CACHE_DURATION_PORTFOLIO_SECONDS = 2 * 60 * 60  # 2 hours for portfolio cache
+CACHE_DURATION_CROSS_CHAIN_SECONDS = 1 * 60 * 60 # 1 hour for cross-chain portfolio cache
 
 # --- MongoDB Client ---
 mongo_client: Optional[AsyncIOMotorClient] = None
@@ -87,6 +90,10 @@ async def connect_to_mongo():
         if FORECAST_SIGNALS_COLLECTION_NAME not in collection_names:
             logger.info(f"Creating collection '{FORECAST_SIGNALS_COLLECTION_NAME}' (async)...")
             await db.create_collection(FORECAST_SIGNALS_COLLECTION_NAME)
+        
+        if CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME not in collection_names:
+            logger.info(f"Creating collection '{CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME}' (async)...")
+            await db.create_collection(CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME)
         
         collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
         
@@ -158,6 +165,32 @@ async def connect_to_mongo():
             await forecast_signals_collection.create_index([("last_updated", pymongo.DESCENDING)], name=forecast_signal_last_updated_index_name)
             logger.info(f"Created index '{forecast_signal_last_updated_index_name}' on forecast_signals 'last_updated' field (async).")
             
+        # Create indexes for cross_chain_portfolio_cache collection
+        cross_chain_portfolio_collection: AsyncIOMotorCollection = db[CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME]
+        cross_chain_portfolio_indexes = await cross_chain_portfolio_collection.index_information()
+        
+        cross_chain_portfolio_unique_index_name = "cross_chain_portfolio_unique_query_idx"
+        if cross_chain_portfolio_unique_index_name not in cross_chain_portfolio_indexes:
+            await cross_chain_portfolio_collection.create_index(
+                [
+                    ("request_chain_ids_str", pymongo.ASCENDING),
+                    ("request_timeframe", pymongo.ASCENDING),
+                    ("request_max_tokens_per_chain", pymongo.ASCENDING),
+                    ("request_mvo_objective", pymongo.ASCENDING),
+                    ("request_risk_free_rate", pymongo.ASCENDING),
+                    ("request_annualization_factor_override", pymongo.ASCENDING),
+                    ("request_target_return", pymongo.ASCENDING)
+                ],
+                name=cross_chain_portfolio_unique_index_name,
+                unique=True # Ensure request parameter combination is unique for a cache entry
+            )
+            logger.info(f"Created unique index '{cross_chain_portfolio_unique_index_name}' on '{CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME}' (async).")
+
+        cross_chain_portfolio_last_updated_index_name = "cross_chain_portfolio_last_updated_idx"
+        if cross_chain_portfolio_last_updated_index_name not in cross_chain_portfolio_indexes:
+            await cross_chain_portfolio_collection.create_index([("last_updated", pymongo.DESCENDING)], name=cross_chain_portfolio_last_updated_index_name)
+            logger.info(f"Created index '{cross_chain_portfolio_last_updated_index_name}' on cross_chain_portfolio_cache 'last_updated' field (async).")
+            
         # No explicit return needed as it sets global 'db'
     except ConnectionFailure as e:
         logger.error(f"MongoDB async connection failed: {e}")
@@ -201,6 +234,11 @@ async def get_ohlcv_from_db(
             logger.debug(f"Found document in DB: {document.get('_id', 'no_id')} with last_updated: {document.get('last_updated', 'no_timestamp')}")
             stored_data = StoredOHLCVData(**document)
             
+            latest_candle_timestamp_in_db: Optional[int] = None
+            if stored_data.ohlcv_candles:
+                # Assuming candles are sorted by time, get the last one's time
+                latest_candle_timestamp_in_db = stored_data.ohlcv_candles[-1].time
+
             # Determine the effective cache duration for this specific timeframe
             # This duration is for the service to consider data "fresh enough" for its own short-term caching logic
             # The 24-hour logic will be handled by the caller.
@@ -219,12 +257,16 @@ async def get_ohlcv_from_db(
             
             status = "fresh" if is_fresh_short_term else "stale_short_term"
             
-            logger.info(f"OHLCV data in DB for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}) is {status}. Last updated: {last_updated_aware}")
+            logger.info(f"OHLCV data in DB for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}) is {status}. Last updated: {last_updated_aware}. Latest candle ts: {latest_candle_timestamp_in_db}")
             return {
                 "status": status,
                 "data": [candle.model_dump() for candle in stored_data.ohlcv_candles],
                 "last_updated": last_updated_aware, # Return the actual last_updated timestamp
-                "raw_document": document # For potential advanced merging later
+                "raw_document": document, # For potential advanced merging later
+                "latest_candle_timestamp_in_db": latest_candle_timestamp_in_db,
+                "base_token_symbol": stored_data.base_token_symbol,
+                "quote_token_symbol": stored_data.quote_token_symbol,
+                "chain_name": stored_data.chain_name,
             }
         else:
             logger.info(f"No OHLCV data found in DB (async) for {base_token_address}/{quote_token_address} on chain {chain_id} ({timeframe}).")
@@ -242,33 +284,31 @@ async def store_ohlcv_in_db(
     quote_token_address: str,
     period_seconds: int,
     timeframe: str,
-    ohlcv_candles_data: List[Dict[str, Any]]
+    ohlcv_candles_data: List[Dict[str, Any]],
+    base_token_symbol: str,
+    quote_token_symbol: str,
+    chain_name: str,
+    latest_known_timestamp_in_db: Optional[int] = None
 ):
     global db
     if db is None:
-        logger.error("Async database connection not available for store_ohlcv_in_db. Connection should be established at startup.")
-        # await connect_to_mongo()
-        # if db is None:
-        #      logger.error("Failed to connect to DB on demand for store_ohlcv_in_db.")
-        #      return
+        logger.error("Async database connection not available for store_ohlcv_in_db.")
         return
-
 
     collection: AsyncIOMotorCollection = db[OHLCV_COLLECTION_NAME]
     
     base_addr_lower = base_token_address.lower()
     quote_addr_lower = quote_token_address.lower()
 
-    parsed_candles = []
+    parsed_api_candles = []
     for candle_data in ohlcv_candles_data:
         try:
-            # Handle both 'timestamp' (1inch Portfolio API v2) and 'time' (legacy) field names
             timestamp_value = candle_data.get("timestamp") or candle_data.get("time")
             if timestamp_value is None:
-                logger.error(f"Skipping candle data with missing timestamp/time field: {candle_data}")
+                logger.error(f"Skipping API candle data with missing timestamp/time field: {candle_data}")
                 continue
-                
-            parsed_candles.append(OHLVCRecord(
+            
+            parsed_api_candles.append(OHLVCRecord(
                 time=int(timestamp_value),
                 open=float(candle_data.get("open")),
                 high=float(candle_data.get("high")),
@@ -276,49 +316,112 @@ async def store_ohlcv_in_db(
                 close=float(candle_data.get("close"))
             ))
         except (TypeError, ValueError) as e:
-            logger.error(f"Skipping invalid candle data during parsing for DB storage (async): {candle_data}. Error: {e}")
+            logger.error(f"Skipping invalid API candle data during parsing: {candle_data}. Error: {e}")
             continue
-
-    if not parsed_candles and ohlcv_candles_data:
-        logger.warning(f"No valid candles to store for {base_addr_lower}/{quote_addr_lower} (async) after parsing. Original count: {len(ohlcv_candles_data)}")
-
-    document_to_store = StoredOHLCVData(
-        chain_id=chain_id,
-        base_token_address=base_addr_lower,
-        quote_token_address=quote_addr_lower,
-        period_seconds=period_seconds,
-        timeframe=timeframe,
-        ohlcv_candles=parsed_candles,
-        last_updated=datetime.now(timezone.utc)
-    )
     
+    # Sort API candles by time just in case, essential for filtering
+    parsed_api_candles.sort(key=lambda c: c.time)
+
+    candles_to_append_or_store = parsed_api_candles
+    if latest_known_timestamp_in_db is not None:
+        # Filter out candles that are older than or equal to the latest known timestamp in DB
+        # and also ensure we are not appending duplicates by timestamp if any slip through.
+        # A set of existing timestamps could be used if the API might return overlapping ranges
+        # but for appending strictly newer data, this filter should suffice.
+        original_api_count = len(parsed_api_candles)
+        candles_to_append_or_store = [
+            c for c in parsed_api_candles if c.time > latest_known_timestamp_in_db
+        ]
+        logger.info(f"Filtered API candles for {base_addr_lower}/{quote_addr_lower}: {len(candles_to_append_or_store)} new candles out of {original_api_count} (latest_known_timestamp_in_db: {latest_known_timestamp_in_db}).")
+
+
+    if not candles_to_append_or_store and ohlcv_candles_data: # If API data was provided but all were old/filtered
+        logger.info(f"No new candles to append for {base_addr_lower}/{quote_addr_lower} after filtering. Original API count: {len(ohlcv_candles_data)}. Will update last_updated if document exists.")
+        # We still want to update 'last_updated' to signify we checked.
+    elif not ohlcv_candles_data: # No API data provided at all
+        logger.info(f"No API candle data provided for {base_addr_lower}/{quote_addr_lower}. Nothing to store or append.")
+        return
+
     query_filter = {
         "chain_id": chain_id,
         "base_token_address": base_addr_lower,
         "quote_token_address": quote_addr_lower,
         "period_seconds": period_seconds,
-        "timeframe": timeframe  # Add timeframe to match unique index
+        "timeframe": timeframe
     }
-    
-    update_data = {"$set": document_to_store.model_dump(by_alias=True)}
 
     try:
-        result = await collection.update_one(query_filter, update_data, upsert=True)
-        if result.upserted_id:
-            logger.info(f"Inserted new OHLCV data into DB (async) for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}). ID: {result.upserted_id}")
-        elif result.modified_count > 0:
-            logger.info(f"Updated existing OHLCV data in DB (async) for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}).")
-        elif result.matched_count > 0 and result.modified_count == 0:
-             logger.info(f"OHLCV data for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}) (async) matched but was identical, no update needed.")
-        else:
-            logger.warning(f"OHLCV data for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}) (async) was not inserted or modified. Matched: {result.matched_count}")
+        existing_doc = await collection.find_one(query_filter, {"_id": 1, "ohlcv_candles": {"$slice": 1}}) # Check existence efficiently
 
+        if existing_doc:
+            if candles_to_append_or_store:
+                # Document exists, and we have new candles to append
+                update_operation = {
+                    "$push": {"ohlcv_candles": {"$each": [c.model_dump() for c in candles_to_append_or_store]}},
+                    "$set": {
+                        "last_updated": datetime.now(timezone.utc),
+                        "base_token_symbol": base_token_symbol,
+                        "quote_token_symbol": quote_token_symbol,
+                        "chain_name": chain_name
+                    }
+                }
+                result = await collection.update_one(query_filter, update_operation)
+                if result.modified_count > 0:
+                    logger.info(f"Appended {len(candles_to_append_or_store)} new OHLCV candles to DB for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}).")
+                elif result.matched_count > 0:
+                    logger.info(f"Matched existing OHLCV data for {base_addr_lower}/{quote_addr_lower} but no modification made (possibly due to identical $set or empty $push). Appended count: {len(candles_to_append_or_store)}.")
+                else:
+                    logger.warning(f"Attempted to append candles for {base_addr_lower}/{quote_addr_lower} but no document matched the filter. This shouldn't happen if existing_doc was found.")
+
+            else:
+                # Document exists, but no new candles to append (all API candles were old or filtered out)
+                # Still update last_updated and other identifiers to show we checked
+                update_set_fields = {
+                    "last_updated": datetime.now(timezone.utc),
+                    "base_token_symbol": base_token_symbol,
+                    "quote_token_symbol": quote_token_symbol,
+                    "chain_name": chain_name
+                }
+                result = await collection.update_one(query_filter, {"$set": update_set_fields})
+                if result.modified_count > 0:
+                    logger.info(f"Updated metadata (last_updated, symbols, chain_name) for existing OHLCV data for {base_addr_lower}/{quote_addr_lower} (no new candles to append).")
+                else:
+                    logger.info(f"No new candles to append and metadata was not modified for {base_addr_lower}/{quote_addr_lower} (already recent or no match).")
+
+        else: # Document does not exist, insert new
+            if not candles_to_append_or_store:
+                 logger.warning(f"No document found and no valid candles to store for new entry {base_addr_lower}/{quote_addr_lower}. Original API data count: {len(ohlcv_candles_data)}")
+                 return # Avoid creating an empty document if all initial candles were filtered out (unlikely for a new entry)
+            
+            logger.info(f"Creating new OHLCV document for {base_addr_lower}/{quote_addr_lower} with {len(candles_to_append_or_store)} candles.")
+            document_to_store = StoredOHLCVData(
+                chain_id=chain_id,
+                base_token_address=base_addr_lower,
+                quote_token_address=quote_addr_lower,
+                period_seconds=period_seconds,
+                timeframe=timeframe,
+                base_token_symbol=base_token_symbol,
+                quote_token_symbol=quote_token_symbol,
+                chain_name=chain_name,
+                ohlcv_candles=candles_to_append_or_store,
+                last_updated=datetime.now(timezone.utc)
+            )
+            update_data = {"$set": document_to_store.model_dump(by_alias=True)}
+            result = await collection.update_one(query_filter, update_data, upsert=True)
+
+            if result.upserted_id:
+                logger.info(f"Inserted new OHLCV data into DB (async) for {base_addr_lower}/{quote_addr_lower} on chain {chain_id} ({timeframe}). ID: {result.upserted_id} with {len(candles_to_append_or_store)} candles.")
+            elif result.modified_count > 0: # Should not happen with upsert=True on a non-existing doc unless race condition
+                logger.info(f"Updated (unexpectedly, should have been upsert) OHLCV data for {base_addr_lower}/{quote_addr_lower}.")
+            else:
+                logger.warning(f"OHLCV data for {base_addr_lower}/{quote_addr_lower} was not inserted via upsert. Matched: {result.matched_count}")
+                
     except OperationFailure as e:
         logger.error(f"MongoDB async operation failure during store_ohlcv_in_db: {e}")
         if hasattr(e, 'code') and e.code == 11000: 
-            logger.error(f"Duplicate key error (async) despite upsert logic for {base_addr_lower}/{quote_addr_lower}. Check index and query logic. Details: {e.details if hasattr(e, 'details') else 'N/A'}")
+            logger.error(f"Duplicate key error (async) during store_ohlcv_in_db for {base_addr_lower}/{quote_addr_lower}. Query: {query_filter}. Details: {e.details if hasattr(e, 'details') else 'N/A'}")
     except Exception as e:
-        logger.error(f"Unexpected error during async store_ohlcv_in_db: {e}", exc_info=True)
+        logger.error(f"Unexpected error during async store_ohlcv_in_db for {base_addr_lower}/{quote_addr_lower}: {e}", exc_info=True)
 
 async def get_portfolio_from_cache(
     chain_id: int,
@@ -675,3 +778,120 @@ async def get_mvo_data_from_db(
     logger.info(f"Fetched historical closes for {len(historical_closes_data)} assets with history points: {ohlcv_history_points}.")
     
     return final_expected_returns_series, historical_closes_data
+
+async def get_cross_chain_portfolio_from_cache(
+    chain_ids_str: str,
+    timeframe: str,
+    max_tokens_per_chain: int,
+    mvo_objective: str,
+    risk_free_rate: float,
+    annualization_factor_override: Optional[int],
+    target_return: Optional[float]
+) -> Optional[Dict[str, Any]]: # Returns the CrossChainPortfolioResponse dict
+    global db
+    if db is None:
+        logger.error("Async database connection not available for get_cross_chain_portfolio_from_cache.")
+        return None
+
+    collection: AsyncIOMotorCollection = db[CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME]
+    query = {
+        "request_chain_ids_str": chain_ids_str,
+        "request_timeframe": timeframe,
+        "request_max_tokens_per_chain": max_tokens_per_chain,
+        "request_mvo_objective": mvo_objective,
+        "request_risk_free_rate": risk_free_rate,
+        "request_annualization_factor_override": annualization_factor_override,
+        "request_target_return": target_return
+    }
+    
+    logger.debug(f"Querying cross-chain portfolio cache with: {query}")
+    
+    try:
+        document = await collection.find_one(query)
+        if document:
+            logger.debug(f"Found cross-chain portfolio document in cache: {document.get('_id', 'no_id')} with last_updated: {document.get('last_updated', 'no_timestamp')}")
+            
+            # Use StoredCrossChainPortfolioData to parse the document from DB
+            # This also helps validate the structure before using it.
+            stored_data = StoredCrossChainPortfolioData(**document)
+            
+            cache_duration = timedelta(seconds=CACHE_DURATION_CROSS_CHAIN_SECONDS)
+            last_updated_aware = stored_data.last_updated
+            if last_updated_aware.tzinfo is None:
+                last_updated_aware = last_updated_aware.replace(tzinfo=timezone.utc)
+
+            if datetime.now(timezone.utc) - last_updated_aware < cache_duration:
+                logger.info(f"Found FRESH cross-chain portfolio data in cache for request: {chain_ids_str}, {timeframe}, {mvo_objective}. Last updated: {last_updated_aware}")
+                # Return the nested response_data directly, which should be a CrossChainPortfolioResponse model (or its dict form)
+                return stored_data.response_data.model_dump() # Return as dict for FastAPI
+            else:
+                logger.info(f"Found STALE cross-chain portfolio data in cache for request: {chain_ids_str}, {timeframe}. Will re-calculate.")
+                return None # Stale data
+        else:
+            logger.info(f"No cross-chain portfolio data found in cache for request: {chain_ids_str}, {timeframe}, {mvo_objective}.")
+            return None # No data at all
+    except Exception as e:
+        logger.error(f"Unexpected error during get_cross_chain_portfolio_from_cache: {e}", exc_info=True)
+        return None
+
+async def store_cross_chain_portfolio_in_cache(
+    chain_ids_str: str,
+    timeframe: str,
+    max_tokens_per_chain: int,
+    mvo_objective: str,
+    risk_free_rate: float,
+    annualization_factor_override: Optional[int],
+    target_return: Optional[float],
+    portfolio_response_data: Dict[str, Any] # This should be the dict form of CrossChainPortfolioResponse
+):
+    global db
+    if db is None:
+        logger.error("Async database connection not available for store_cross_chain_portfolio_in_cache.")
+        return
+
+    collection: AsyncIOMotorCollection = db[CROSS_CHAIN_PORTFOLIO_COLLECTION_NAME]
+    
+    try:
+        # Create the Pydantic model for storage
+        # The portfolio_response_data is already a dict, CrossChainPortfolioResponse.model_validate should handle it
+        from models import CrossChainPortfolioResponse as CrossChainPortfolioResponseModel # Local import for clarity
+        
+        # Validate and structure the response_data part first
+        validated_response = CrossChainPortfolioResponseModel(**portfolio_response_data)
+
+        document_to_store = StoredCrossChainPortfolioData(
+            request_chain_ids_str=chain_ids_str,
+            request_timeframe=timeframe,
+            request_max_tokens_per_chain=max_tokens_per_chain,
+            request_mvo_objective=mvo_objective,
+            request_risk_free_rate=risk_free_rate,
+            request_annualization_factor_override=annualization_factor_override,
+            request_target_return=target_return,
+            response_data=validated_response, # Store the validated Pydantic model
+            last_updated=datetime.now(timezone.utc)
+        )
+        
+        query_filter = {
+            "request_chain_ids_str": chain_ids_str,
+            "request_timeframe": timeframe,
+            "request_max_tokens_per_chain": max_tokens_per_chain,
+            "request_mvo_objective": mvo_objective,
+            "request_risk_free_rate": risk_free_rate,
+            "request_annualization_factor_override": annualization_factor_override,
+            "request_target_return": target_return
+        }
+        
+        update_data = {"$set": document_to_store.model_dump(by_alias=True)}
+
+        result = await collection.update_one(query_filter, update_data, upsert=True)
+        if result.upserted_id:
+            logger.info(f"Inserted new cross-chain portfolio data into cache. Request: {chain_ids_str}, {timeframe}. ID: {result.upserted_id}")
+        elif result.modified_count > 0:
+            logger.info(f"Updated existing cross-chain portfolio data in cache. Request: {chain_ids_str}, {timeframe}.")
+        elif result.matched_count > 0 and result.modified_count == 0:
+            logger.info(f"Cross-chain portfolio data for request {chain_ids_str}, {timeframe} matched but was identical, no update needed.")
+        else:
+            logger.warning(f"Cross-chain portfolio data for request {chain_ids_str}, {timeframe} was not inserted or modified. Matched: {result.matched_count}")
+
+    except Exception as e:
+        logger.error(f"Unexpected error during store_cross_chain_portfolio_in_cache for request {chain_ids_str}, {timeframe}: {e}", exc_info=True)

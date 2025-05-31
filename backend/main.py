@@ -15,7 +15,9 @@ from services.mongo_service import (
     get_portfolio_from_cache,
     store_portfolio_in_cache,
     store_forecast_signals,
-    get_recent_forecast_signals
+    get_recent_forecast_signals,
+    get_cross_chain_portfolio_from_cache,
+    store_cross_chain_portfolio_in_cache
 )
 from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest, SingleChainPortfolioOptimizationResult, CrossChainPortfolioResponse, Signal, ForecastSignalRecord
 from services import one_inch_data_service , one_inch_fusion_service
@@ -75,8 +77,8 @@ async def screen_tokens_on_chain(
     
     The process is limited to a configurable number of tokens and has a timeout for efficiency.
     """
-    # Defaulting to 30 tokens for this specific endpoint, can be made a parameter if needed
-    default_max_tokens_for_screening_endpoint = 30
+    # Reduced to 50 tokens for faster processing (was 30)
+    default_max_tokens_for_screening_endpoint = 50
     return await asyncio.wait_for(
         _perform_token_screening(chain_id, timeframe, default_max_tokens_for_screening_endpoint),
         timeout=SCREENING_TIMEOUT_SECONDS
@@ -178,6 +180,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
             "base_token_name": token_info.get('name', 'N/A'),
             "quote_token_address": None,
             "quote_token_symbol": None,
+            "short_quote_token_symbol": None,
             "period_seconds": period_seconds,
             "ohlcv_data": None,
             "data_source": "api", # Will be updated if from DB
@@ -196,18 +199,19 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
 
         for attempt_idx, quote_candidate in enumerate(potential_quotes):
             quote_address = quote_candidate["address"]
-            quote_symbol = f"{quote_candidate['name']}_on_{chain_name}"
-            quote_name = quote_candidate["name"]
+            long_quote_symbol = f"{quote_candidate['name']}_on_{chain_name}"
+            short_quote_symbol = quote_candidate["name"]
 
             current_result["quote_token_address"] = quote_address # Tentatively set
-            current_result["quote_token_symbol"] = quote_symbol  # Tentatively set
+            current_result["quote_token_symbol"] = long_quote_symbol  # Tentatively set
+            current_result["short_quote_token_symbol"] = short_quote_symbol # Tentatively set
 
             base_addr_lower = base_token_address.lower()
             quote_addr_lower = quote_address.lower()
 
             if base_addr_lower == quote_addr_lower:
-                logger.info(f"Skipping OHLCV for {base_token_symbol} against itself ({quote_name} on {chain_name}).")
-                last_error_message_for_token = f"Self-pair with {quote_name}, OHLCV not applicable."
+                logger.info(f"Skipping OHLCV for {base_token_symbol} against itself ({short_quote_symbol} on {chain_name}).")
+                last_error_message_for_token = f"Self-pair with {short_quote_symbol}, OHLCV not applicable."
                 current_result["error"] = last_error_message_for_token
                 continue
 
@@ -220,20 +224,25 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
             is_quote_stable_by_address = quote_addr_lower in known_quote_stablecoin_addresses
 
             if is_base_stable_by_symbol and is_quote_stable_by_address:
-                logger.info(f"Skipping OHLCV for stablecoin base ({base_token_symbol}) vs stablecoin quote ({quote_name}) on {chain_name}.")
-                last_error_message_for_token = f"Stablecoin vs stablecoin pair ({base_token_symbol}/{quote_name}), OHLCV not fetched."
+                logger.info(f"Skipping OHLCV for stablecoin base ({base_token_symbol}) vs stablecoin quote ({short_quote_symbol}) on {chain_name}.")
+                last_error_message_for_token = f"Stablecoin vs stablecoin pair ({base_token_symbol}/{short_quote_symbol}), OHLCV not fetched."
                 current_result["error"] = last_error_message_for_token
                 continue # Try next quote candidate
 
-            pair_desc = f"{base_token_symbol}/{quote_symbol} on {chain_name}"
-            logger.info(f"Processing OHLCV for {pair_desc} (using {quote_name}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
+            pair_desc = f"{base_token_symbol}/{long_quote_symbol} on {chain_name}"
+            logger.info(f"Processing OHLCV for {pair_desc} (using {short_quote_symbol}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
 
             db_check_result = await get_ohlcv_from_db(
                 chain_id, base_token_address, quote_address, period_seconds, timeframe
             )
             
-            # Define the 24-hour threshold for API refresh
-            long_term_refresh_threshold = timedelta(hours=23) # Be a bit lenient to avoid missing an update cycle
+            latest_known_timestamp_from_db: Optional[int] = None
+            if db_check_result and db_check_result.get("latest_candle_timestamp_in_db") is not None:
+                latest_known_timestamp_from_db = db_check_result["latest_candle_timestamp_in_db"]
+                logger.info(f"Latest known candle timestamp from DB for {pair_desc} is {latest_known_timestamp_from_db}")
+
+            # Define the 24-hour threshold for API refresh - Extended to 7 days for faster processing
+            long_term_refresh_threshold = timedelta(hours=168)  # 7 days (was 23 hours)
 
             if db_check_result:
                 db_candles = db_check_result["data"]
@@ -245,7 +254,8 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     current_result["error"] = None
                     current_result["data_source"] = "database_recent"
                     current_result["quote_token_address"] = quote_address 
-                    current_result["quote_token_symbol"] = quote_symbol
+                    current_result["quote_token_symbol"] = long_quote_symbol
+                    current_result["short_quote_token_symbol"] = short_quote_symbol
                     logger.info(f"Using RECENT ({db_last_updated.isoformat()}) OHLCV data from DB for {pair_desc} ({len(db_candles)} candles). No API call needed.")
                     ohlcv_fetched_successfully = True
                     break # Successfully got recent data from DB for this quote pair
@@ -281,7 +291,9 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     current_result["error"] = None
                     current_result["data_source"] = "api"
                     current_result["quote_token_address"] = quote_address 
-                    current_result["quote_token_symbol"] = quote_symbol
+                    current_result["quote_token_symbol"] = long_quote_symbol
+                    current_result["short_quote_token_symbol"] = short_quote_symbol
+
 
                     logger.info(f"Successfully fetched {len(api_candles)} candles for {pair_desc} from API.")
                     ohlcv_fetched_successfully = True
@@ -289,7 +301,11 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     if api_candles: 
                         await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
-                            period_seconds, timeframe, api_candles
+                            period_seconds, timeframe, api_candles,
+                            base_token_symbol=base_token_symbol,
+                            quote_token_symbol=short_quote_symbol,
+                            chain_name=chain_name,
+                            latest_known_timestamp_in_db=latest_known_timestamp_from_db
                         )
                     else: 
                         logger.warning(f"API returned success but data array is empty for {pair_desc}. Not storing in DB.")
@@ -301,7 +317,9 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     current_result["error"] = None
                     current_result["data_source"] = "api"
                     current_result["quote_token_address"] = quote_address
-                    current_result["quote_token_symbol"] = quote_symbol
+                    current_result["quote_token_symbol"] = long_quote_symbol
+                    current_result["short_quote_token_symbol"] = short_quote_symbol
+
 
                     logger.info(f"Successfully fetched {len(api_candles)} candles for {pair_desc} from API (nested data).")
                     ohlcv_fetched_successfully = True
@@ -309,12 +327,16 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     if api_candles:
                         await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
-                            period_seconds, timeframe, api_candles
+                            period_seconds, timeframe, api_candles,
+                            base_token_symbol=base_token_symbol,
+                            quote_token_symbol=short_quote_symbol,
+                            chain_name=chain_name,
+                            latest_known_timestamp_in_db=latest_known_timestamp_from_db
                         )
                     break
                 else: # API response was not as expected (e.g. empty dict, non-list)
-                    logger.warning(f"OHLCV data for {pair_desc} (with {quote_name}) was fetched but data is empty, not a list, or in unexpected format. Response type: {type(ohlcv_api_response)}")
-                    last_error_message_for_token = f"OHLCV data missing/empty from API (with {quote_name})."
+                    logger.warning(f"OHLCV data for {pair_desc} (with {short_quote_symbol}) was fetched but data is empty, not a list, or in unexpected format. Response type: {type(ohlcv_api_response)}")
+                    last_error_message_for_token = f"OHLCV data missing/empty from API (with {short_quote_symbol})."
                     # If API fails but we had stale DB data, use that as a fallback
                     if db_check_result and db_check_result.get("data"):
                         logger.warning(f"API fetch for {pair_desc} failed or returned empty. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
@@ -322,38 +344,41 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                         current_result["error"] = None # Clearing error as we have fallback data
                         current_result["data_source"] = "database_stale_fallback"
                         current_result["quote_token_address"] = quote_address
-                        current_result["quote_token_symbol"] = quote_symbol
+                        current_result["quote_token_symbol"] = long_quote_symbol
+                        current_result["short_quote_token_symbol"] = short_quote_symbol
                         ohlcv_fetched_successfully = True # Considered successful as we have data
                         break # Stop trying other quote tokens if we have a fallback
                     else:
                          current_result["error"] = last_error_message_for_token
 
             except one_inch_data_service.OneInchAPIError as e:
-                logger.error(f"API Error fetching OHLCV for {pair_desc} (with {quote_name}): {e}")
-                last_error_message_for_token = f"1inch API Error (with {quote_name}): {str(e)}"
+                logger.error(f"API Error fetching OHLCV for {pair_desc} (with {short_quote_symbol}): {e}")
+                last_error_message_for_token = f"1inch API Error (with {short_quote_symbol}): {str(e)}"
                 if db_check_result and db_check_result.get("data"): # Fallback to stale data on API error
                     logger.warning(f"API error for {pair_desc}. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
                     current_result["ohlcv_data"] = db_check_result["data"]
                     current_result["error"] = None
                     current_result["data_source"] = "database_stale_fallback_on_api_error"
                     current_result["quote_token_address"] = quote_address
-                    current_result["quote_token_symbol"] = quote_symbol
+                    current_result["quote_token_symbol"] = long_quote_symbol
+                    current_result["short_quote_token_symbol"] = short_quote_symbol
                     ohlcv_fetched_successfully = True
                     break
                 else:
                     current_result["error"] = last_error_message_for_token
                 if e.response_text and "charts not supported for chosen tokens" in e.response_text:
-                    logger.warning(f"'Charts not supported' error for {pair_desc} with {quote_name}. Fallback (if any) will proceed.")
+                    logger.warning(f"'Charts not supported' error for {pair_desc} with {short_quote_symbol}. Fallback (if any) will proceed.")
             except Exception as e:
-                logger.error(f"Unexpected error fetching OHLCV for {pair_desc} (with {quote_name}): {e}", exc_info=True)
-                last_error_message_for_token = f"Unexpected error (with {quote_name}): {str(e)}"
+                logger.error(f"Unexpected error fetching OHLCV for {pair_desc} (with {short_quote_symbol}): {e}", exc_info=True)
+                last_error_message_for_token = f"Unexpected error (with {short_quote_symbol}): {str(e)}"
                 if db_check_result and db_check_result.get("data"): # Fallback to stale data on general error
                     logger.warning(f"Unexpected error for {pair_desc}. Using STALE data from DB as fallback (last updated: {db_check_result['last_updated']}).")
                     current_result["ohlcv_data"] = db_check_result["data"]
                     current_result["error"] = None
                     current_result["data_source"] = "database_stale_fallback_on_exception"
                     current_result["quote_token_address"] = quote_address
-                    current_result["quote_token_symbol"] = quote_symbol
+                    current_result["quote_token_symbol"] = long_quote_symbol
+                    current_result["short_quote_token_symbol"] = short_quote_symbol
                     ohlcv_fetched_successfully = True
                     break
                 else:
@@ -579,7 +604,7 @@ async def process_single_chain_data_gathering(
 async def get_optimized_portfolios_for_chains(
     chain_ids_str: str = Query(..., alias="chain_ids", description="Comma-separated string of chain IDs. E.g., 1,42161,10"),
     timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data."),
-    max_tokens_per_chain: int = Query(260, ge=2, le=500, description="Max number of tokens to screen per chain (2-500)."),
+    max_tokens_per_chain: int = Query(50, ge=2, le=500, description="Max number of tokens to screen per chain (default 50, range 2-500)."),
     mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility", "maximize_return"]),
     risk_free_rate: float = Query(0.02, description="Risk-free rate."),
     annualization_factor_override: Optional[int] = Query(None, ge=1),
@@ -587,12 +612,36 @@ async def get_optimized_portfolios_for_chains(
 ):
     main_request_start_time = time.time()
     try:
-        chain_ids = [int(c.strip()) for c in chain_ids_str.split(',') if c.strip()]
-        if not chain_ids: raise ValueError("No chain IDs provided.")
+        chain_ids_input_list = [int(c.strip()) for c in chain_ids_str.split(',') if c.strip()]
+        if not chain_ids_input_list: raise ValueError("No chain IDs provided.")
+        # Sort and join to ensure consistent cache key for chain_ids_str
+        # This is important if the user enters "1,10" vs "10,1"
+        chain_ids_input_list.sort()
+        consistent_chain_ids_str = ",".join(map(str, chain_ids_input_list))
+
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid chain_ids: {e}")
 
-    logger.info(f"Cross-Chain Global MVO Request: chain_ids={chain_ids}, timeframe={timeframe}, max_tokens_per_chain={max_tokens_per_chain}, objective={mvo_objective}")
+    logger.info(f"Cross-Chain Global MVO Request: chain_ids_str='{consistent_chain_ids_str}', timeframe={timeframe}, max_tokens_per_chain={max_tokens_per_chain}, objective={mvo_objective}")
+
+    # Attempt to retrieve from cache first
+    try:
+        cached_result = await get_cross_chain_portfolio_from_cache(
+            chain_ids_str=consistent_chain_ids_str,
+            timeframe=timeframe,
+            max_tokens_per_chain=max_tokens_per_chain,
+            mvo_objective=mvo_objective,
+            risk_free_rate=risk_free_rate,
+            annualization_factor_override=annualization_factor_override,
+            target_return=target_return
+        )
+        if cached_result:
+            logger.info(f"✅ Returning CACHED cross-chain portfolio response for request: {consistent_chain_ids_str}, {timeframe}")
+            # The cached_result should already be a dict representation of CrossChainPortfolioResponse
+            return cached_result # FastAPI will serialize this dict to JSON
+    except Exception as e_cache_get:
+        logger.warning(f"Error retrieving from cross-chain portfolio cache (request: {consistent_chain_ids_str}, {timeframe}): {e_cache_get}. Proceeding with full calculation.")
+
 
     timeframe_lower = timeframe.lower()
     if timeframe_lower == "min5": period_seconds, default_annual_factor = 300, 365 * 24 * 12
@@ -609,7 +658,7 @@ async def get_optimized_portfolios_for_chains(
     # --- Step 1: Concurrently gather screened asset data from all chains ---
     logger.info("Starting concurrent data gathering for all specified chains...")
     data_gathering_tasks = [
-        process_single_chain_data_gathering(cid, timeframe, max_tokens_per_chain, CHAIN_ID_TO_NAME) for cid in chain_ids
+        process_single_chain_data_gathering(cid, timeframe, max_tokens_per_chain, CHAIN_ID_TO_NAME) for cid in chain_ids_input_list # Use the list here
     ]
     gathered_chain_data_results = await asyncio.gather(*data_gathering_tasks, return_exceptions=True)
 
@@ -619,7 +668,7 @@ async def get_optimized_portfolios_for_chains(
     chain_processing_statuses: Dict[str, Dict[str, Any]] = {}
 
     for i, result_or_exc in enumerate(gathered_chain_data_results):
-        original_chain_id = chain_ids[i]
+        original_chain_id = chain_ids_input_list[i] # Use the list here
         processed_chain_name = CHAIN_ID_TO_NAME.get(original_chain_id, f"Unknown Chain ({original_chain_id})")
 
         if isinstance(result_or_exc, Exception):
@@ -648,7 +697,7 @@ async def get_optimized_portfolios_for_chains(
     if not all_asset_identifiers_global:
         # Check if any chain had a hard failure vs. just no assets
         hard_failures = sum(1 for stat in chain_processing_statuses.values() if "error" in stat["status"])
-        if hard_failures == len(chain_ids):
+        if hard_failures == len(chain_ids_input_list): # Use the list here
              raise HTTPException(status_code=503, detail="Data gathering failed for all requested chains.")
         else:
              raise HTTPException(status_code=404, detail="No valid asset data gathered from any chain after screening. Some chains might have had partial success or no assets.")
@@ -802,7 +851,10 @@ async def get_optimized_portfolios_for_chains(
     optimized_global_portfolio_raw = optimize_portfolio_mvo(
         expected_returns=mvo_inputs_global["expected_returns"],
         covariance_matrix=mvo_inputs_global["covariance_matrix"],
-        risk_free_rate=risk_free_rate, objective=mvo_objective, target_return=target_return
+        historical_period_returns_df=mvo_inputs_global.get("historical_period_returns_df"), # Pass historical returns for CVaR
+        risk_free_rate=risk_free_rate, 
+        objective=mvo_objective, 
+        target_return=target_return
     )
     if not optimized_global_portfolio_raw: raise HTTPException(status_code=500, detail="Global portfolio optimization failed.")
 
@@ -823,7 +875,7 @@ async def get_optimized_portfolios_for_chains(
         },
     }
 
-    return CrossChainPortfolioResponse(
+    final_response_object = CrossChainPortfolioResponse(
         results_by_chain={ # This structure is kept for consistency, but now holds one global result
             "global_cross_chain": SingleChainPortfolioOptimizationResult(
                 chain_id=0, # Representing a global/aggregated scope
@@ -831,14 +883,18 @@ async def get_optimized_portfolios_for_chains(
                 status="success", 
                 data=global_portfolio_data_payload,
                 request_params_for_chain={
-                    "chain_ids_requested": chain_ids, "timeframe": timeframe, "mvo_objective": mvo_objective,
+                    "chain_ids_requested": chain_ids_input_list, "timeframe": timeframe, "mvo_objective": mvo_objective,
                     "risk_free_rate": risk_free_rate, "annualization_factor_used": annualization_factor,
                     "max_tokens_per_chain_screening": max_tokens_per_chain, "target_return": target_return
                 })
         },
         overall_request_summary={
-            "requested_chain_ids": chain_ids, "timeframe": timeframe, "max_tokens_per_chain_screening": max_tokens_per_chain,
-            "mvo_objective": mvo_objective, "risk_free_rate": risk_free_rate, "annualization_factor_used": annualization_factor,
+            "requested_chain_ids": chain_ids_input_list,
+            "timeframe": timeframe, 
+            "max_tokens_per_chain_screening": max_tokens_per_chain,
+            "mvo_objective": mvo_objective, 
+            "risk_free_rate": risk_free_rate, 
+            "annualization_factor_used": annualization_factor,
             "total_unique_assets_after_screening": len(all_asset_identifiers_global),
             "assets_considered_for_global_mvo": len(assets_for_global_mvo_input),
             "assets_in_final_portfolio": optimized_global_portfolio_serializable.get("assets_with_allocation", 0),
@@ -846,6 +902,24 @@ async def get_optimized_portfolios_for_chains(
             "chain_data_gathering_summary": chain_processing_statuses
         }
     )
+
+    # Store the successful result in cache
+    try:
+        await store_cross_chain_portfolio_in_cache(
+            chain_ids_str=consistent_chain_ids_str, # Use the consistent string for cache key
+            timeframe=timeframe,
+            max_tokens_per_chain=max_tokens_per_chain,
+            mvo_objective=mvo_objective,
+            risk_free_rate=risk_free_rate,
+            annualization_factor_override=annualization_factor_override,
+            target_return=target_return,
+            portfolio_response_data=final_response_object.model_dump() # Pass the dict form of the response
+        )
+        logger.info(f"Successfully cached cross-chain portfolio response for request: {consistent_chain_ids_str}, {timeframe}")
+    except Exception as e_cache_store:
+        logger.warning(f"Failed to store cross-chain portfolio response in cache (request: {consistent_chain_ids_str}, {timeframe}): {e_cache_store}. Proceeding without caching this result.")
+
+    return final_response_object
 
 @app.post("/portfolio/optimize/{chain_id}", summary="Screen, Forecast, and Optimize Portfolio", response_model=Dict[str, Any])
 async def get_optimized_portfolio_for_chain(
