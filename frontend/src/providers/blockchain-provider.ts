@@ -7,5 +7,5 @@ export interface BlockchainProviderConnector {
         typedData: EIP712TypedData
     ): Promise<string>
 
-    ethCall(contractAddress: string, callData: string): Promise<string>
+    // ethCall(contractAddress: string, callData: string): Promise<string>
 }
