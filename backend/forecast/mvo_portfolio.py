@@ -146,6 +146,23 @@ def optimize_portfolio_mvo(
     # Ensure consistent indexing
     assets = expected_returns.index
     covariance_matrix = covariance_matrix.loc[assets, assets]
+    
+    # Data validation to prevent numerical issues
+    if expected_returns.isnull().any():
+        logger.warning("Expected returns contain NaN values, filling with 0")
+        expected_returns = expected_returns.fillna(0)
+    
+    if covariance_matrix.isnull().any().any():
+        logger.warning("Covariance matrix contains NaN values, filling with small positive values")
+        covariance_matrix = covariance_matrix.fillna(1e-8)
+    
+    # Ensure covariance matrix is positive semi-definite
+    eigenvals = np.linalg.eigvals(covariance_matrix.values)
+    if np.any(eigenvals < -1e-8):  # Allow for small numerical errors
+        logger.warning("Covariance matrix is not positive semi-definite, regularizing")
+        # Add small regularization to diagonal
+        regularization = 1e-6
+        covariance_matrix += np.eye(len(covariance_matrix)) * regularization
 
     args = (expected_returns, covariance_matrix, risk_free_rate)
     
@@ -158,7 +175,13 @@ def optimize_portfolio_mvo(
     # Initial guess: equal weights
     initial_weights = np.array(num_assets * [1. / num_assets])
 
-    optimizer_options = {'ftol': 1e-9, 'disp': False}
+    # More robust optimizer options to reduce numerical issues
+    optimizer_options = {
+        'ftol': 1e-6,  # Relaxed tolerance (was 1e-9)
+        'disp': False,
+        'maxiter': 1000,  # Maximum iterations
+        'eps': 1e-8  # Step size for finite difference approximation
+    }
 
     if objective == "maximize_sharpe":
         opt_func = _neg_sharpe_ratio
@@ -196,26 +219,58 @@ def optimize_portfolio_mvo(
             result_message = "Directly assigned 100% to highest expected return asset."
             logger.info(result_message)
         else:
-            optimization_result = minimize(opt_func, initial_weights, args=args, method='SLSQP',
-                                bounds=bounds, constraints=constraints, options=optimizer_options)
-            result_success = optimization_result.success
-            optimal_weights = optimization_result.x if result_success else initial_weights
-            result_message = optimization_result.message if not result_success else "Optimization successful."
+            # Try SLSQP first, then fallback to other methods if it fails
+            methods_to_try = ['SLSQP', 'trust-constr']
+            optimization_result = None
+            
+            for method in methods_to_try:
+                try:
+                    logger.debug(f"Attempting optimization with method: {method}")
+                    optimization_result = minimize(opt_func, initial_weights, args=args, method=method,
+                                        bounds=bounds, constraints=constraints, options=optimizer_options)
+                    if optimization_result.success:
+                        logger.info(f"Optimization successful with method: {method}")
+                        break
+                    else:
+                        logger.warning(f"Optimization with {method} did not succeed: {optimization_result.message}")
+                except Exception as method_e:
+                    logger.warning(f"Optimization method {method} failed with exception: {method_e}")
+                    continue
+            
+            if optimization_result is None:
+                logger.error("All optimization methods failed")
+                result_success = False
+                optimal_weights = initial_weights
+                result_message = "All optimization methods failed"
+            else:
+                result_success = optimization_result.success
+                optimal_weights = optimization_result.x if result_success else initial_weights
+                result_message = optimization_result.message if not result_success else "Optimization successful."
 
     except Exception as e:
-        logger.error(f"MVO optimization failed: {e}")
-        return None
+        logger.error(f"MVO optimization failed with exception: {e}")
+        # Don't return None, instead use fallback weights
+        result_success = False
+        optimal_weights = initial_weights
+        result_message = f"Exception during optimization: {str(e)}"
 
     if not result_success:
         logger.warning(f"MVO optimization did not succeed: {result_message}")
-        # Fallback for maximize_return if optimizer fails for some reason
+        # Implement fallback strategies for all objectives when optimizer fails
         if objective == "maximize_return":
             logger.warning("Optimizer failed for 'maximize_return', falling back to assigning 100% to highest expected return asset.")
             best_asset_idx = np.argmax(expected_returns.values)
             optimal_weights = np.zeros(num_assets)
             optimal_weights[best_asset_idx] = 1.0
-        else: # For other objectives, if optimizer fails, returning None or initial_weights might be options
-             return None
+        elif objective == "maximize_sharpe":
+            logger.warning("Optimizer failed for 'maximize_sharpe', falling back to equal weights portfolio.")
+            optimal_weights = np.array(num_assets * [1. / num_assets])
+        elif objective == "minimize_volatility":
+            logger.warning("Optimizer failed for 'minimize_volatility', falling back to equal weights portfolio.")
+            optimal_weights = np.array(num_assets * [1. / num_assets])
+        else:
+            logger.warning(f"Optimizer failed for unknown objective '{objective}', falling back to equal weights portfolio.")
+            optimal_weights = np.array(num_assets * [1. / num_assets])
 
     # Normalize weights to ensure they sum to exactly 1.0 and handle precision issues
     if np.sum(optimal_weights) > 1e-6 : # Avoid division by zero if all weights are zero
@@ -325,5 +380,9 @@ def optimize_portfolio_mvo(
         "calmar_ratio": round(calmar_ratio_val, 6),
         "covariance_matrix_optimized": optimized_covariance_matrix.to_dict(orient='index'), # Cov matrix for optimized portfolio
         "total_assets_considered": len(assets),
-        "assets_with_allocation": len(non_zero_weights)
+        "assets_with_allocation": len(non_zero_weights),
+        "optimization_success": bool(result_success) if 'result_success' in locals() else True,
+        "optimization_message": result_message if 'result_message' in locals() else "Optimization completed successfully",
+        "portfolio_concentration": round(max(non_zero_weights) if len(non_zero_weights) > 0 else 0, 4),  # Highest single asset weight
+        "portfolio_diversification_ratio": round(len(non_zero_weights) / len(assets) if len(assets) > 0 else 0, 4)  # Fraction of assets with allocation
     }

@@ -97,11 +97,12 @@ class StoredPortfolioData(BaseModel):
 class ForecastSignalRecord(BaseModel):
     asset_symbol: str                 # e.g., "ETH-USDC_on_Optimism" - Global identifier
     chain_id: int
-    base_token_address: Optional[str] = None  # Changed to Optional
+    base_token_address: Optional[str] = None
     quote_token_address: Optional[str] = None 
     base_token_symbol: Optional[str] = None   
     quote_token_symbol: Optional[str] = None  
     signal_type: str 
+    timeframe: str # Added timeframe field
     confidence: float
     details: Dict[str, Any] 
     forecast_timestamp: int 

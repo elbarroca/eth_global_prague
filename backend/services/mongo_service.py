@@ -153,12 +153,13 @@ async def connect_to_mongo():
                     ("asset_symbol", pymongo.ASCENDING),
                     ("chain_id", pymongo.ASCENDING),
                     ("signal_type", pymongo.ASCENDING),
-                    ("forecast_timestamp", pymongo.DESCENDING) # Allows querying latest forecast for a type
+                    ("timeframe", pymongo.ASCENDING),
+                    ("forecast_timestamp", pymongo.DESCENDING)
                 ],
                 name=forecast_signal_unique_index_name,
-                unique=False # Not strictly unique as details might differ for same timestamp temporarily
+                unique=True
             )
-            logger.info(f"Created index '{forecast_signal_unique_index_name}' on '{FORECAST_SIGNALS_COLLECTION_NAME}' (async).")
+            logger.info(f"Created unique index '{forecast_signal_unique_index_name}' on '{FORECAST_SIGNALS_COLLECTION_NAME}' (async).")
 
         forecast_signal_last_updated_index_name = "forecast_signal_last_updated_idx"
         if forecast_signal_last_updated_index_name not in forecast_signals_indexes:
@@ -596,6 +597,7 @@ async def store_forecast_signals(
 async def get_recent_forecast_signals(
     asset_symbol_global: str,
     chain_id: int, # Original chain_id of the asset for an exact match
+    timeframe: str, # Added timeframe parameter
     max_forecast_age_hours: int = 4 # e.g., forecasts older than 4 hours are stale
 ) -> Optional[List[ForecastSignalRecord]]:
     """
@@ -615,6 +617,7 @@ async def get_recent_forecast_signals(
     query = {
         "asset_symbol": asset_symbol_global,
         "chain_id": chain_id, # Ensure we match the asset on its original chain
+        "timeframe": timeframe, # Added timeframe to query
         "forecast_timestamp": {"$gte": earliest_acceptable_timestamp_sec}
     }
     

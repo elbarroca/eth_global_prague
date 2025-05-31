@@ -92,96 +92,175 @@ def filter_non_stablecoin_pairs(asset_identifiers: List[Dict[str, Any]]) -> List
 
 def rank_assets_based_on_signals(
     asset_signals: Dict[str, List[Signal]],
+    all_available_assets: Optional[List[str]] = None,  # NEW: List of all assets to ensure comprehensive scoring
     quant_signal_weights: Optional[Dict[str, float]] = None,
     ta_signal_weights: Optional[Dict[str, float]] = None
 ) -> pd.DataFrame:
     """
     Ranks assets based on a weighted score of their generated signals.
+    Now ensures ALL assets get scored, even if they have no signals.
     """
     if quant_signal_weights is None:
-        # Default weights for quant signals (prioritize bullish, high confidence signals)
+        # Enhanced weights for quant signals with more granular scoring
         quant_signal_weights = {
-            "QUANT_FOURIER_MEAN_REVERSION_BUY": 1.5,
-            "QUANT_MEANREVERT_OVEREXTENDED_LOW": 1.2,
-            "QUANT_MOMENTUM_HIGH_SHARPE": 1.0,
-            "QUANT_VOL_REGIME_LOW": 0.8, # Low volatility can be good for some strategies
-            "QUANT_DISTRIBUTION_POSITIVE_SKEW_OPPORTUNITY": 0.7,
-            "QUANT_LIQUIDITY_BULLISH_VPT_DIVERGENCE": 0.6,
-            "QUANT_FOURIER_EXTREME_DEVIATION_LOW": 1.0,
-            "QUANT_REGIME_STRONG_UPTREND": 0.9,
-            # Penalize bearish/risk signals
-            "QUANT_FOURIER_MEAN_REVERSION_SELL": -1.5,
-            "QUANT_MEANREVERT_OVEREXTENDED_HIGH": -1.2,
-            "QUANT_MOMENTUM_NEGATIVE_SHARPE": -1.0,
-            "QUANT_CVAR95_HIGH_RISK": -1.5,
-            "QUANT_GARCH_HIGH_VOL_FORECAST": -0.8,
-            "QUANT_VOL_REGIME_HIGH": -0.8,
-            "QUANT_DISTRIBUTION_NEGATIVE_SKEW_RISK": -1.0,
-            "QUANT_LIQUIDITY_BEARISH_VPT_DIVERGENCE": -0.6,
-            "QUANT_FOURIER_EXTREME_DEVIATION_HIGH": -1.0,
-            "QUANT_REGIME_STRONG_DOWNTREND": -0.9,
+            # Strong bullish signals
+            "QUANT_FOURIER_MEAN_REVERSION_BUY": 2.0,
+            "QUANT_MEANREVERT_OVEREXTENDED_LOW": 1.8,
+            "QUANT_MOMENTUM_HIGH_SHARPE": 1.5,
+            "QUANT_FOURIER_EXTREME_DEVIATION_LOW": 1.4,
+            "QUANT_REGIME_STRONG_UPTREND": 1.3,
+            "QUANT_DISTRIBUTION_POSITIVE_SKEW_OPPORTUNITY": 1.0,
+            
+            # Moderate bullish signals
+            "QUANT_VOL_REGIME_LOW": 0.8,
+            "QUANT_LIQUIDITY_BULLISH_VPT_DIVERGENCE": 0.7,
+            "QUANT_VOL_RISK_PREMIUM_LOW": 0.6,
+            "QUANT_LIQUIDITY_VOLUME_SPIKE": 0.5,
+            
+            # Strong bearish/risk signals
+            "QUANT_FOURIER_MEAN_REVERSION_SELL": -2.0,
+            "QUANT_MEANREVERT_OVEREXTENDED_HIGH": -1.8,
+            "QUANT_CVAR95_HIGH_RISK": -1.7,
+            "QUANT_MOMENTUM_NEGATIVE_SHARPE": -1.5,
+            "QUANT_FOURIER_EXTREME_DEVIATION_HIGH": -1.4,
+            "QUANT_REGIME_STRONG_DOWNTREND": -1.3,
+            "QUANT_DISTRIBUTION_NEGATIVE_SKEW_RISK": -1.2,
+            "QUANT_DISTRIBUTION_HIGH_KURTOSIS_RISK": -1.1,
+            
+            # Moderate bearish signals
+            "QUANT_GARCH_HIGH_VOL_FORECAST": -1.0,
+            "QUANT_VOL_REGIME_HIGH": -0.9,
+            "QUANT_LIQUIDITY_BEARISH_VPT_DIVERGENCE": -0.8,
+            "QUANT_VOL_RISK_PREMIUM_HIGH": -0.7,
+            "QUANT_MOMENTUM_BEARISH_DIVERGENCE": -0.6,
+            "QUANT_LIQUIDITY_VOLUME_DROUGHT": -0.5,
         }
+        
     if ta_signal_weights is None:
-        # Default weights for TA signals
+        # Enhanced weights for TA signals
         ta_signal_weights = {
-            "TA_MA_CROSS_BULLISH": 1.0,
-            "TA_RSI_OVERSOLD": 0.8,
-            "TA_MACD_CROSS_BULLISH": 1.2,
-            "TA_MACD_BULLISH_MOMENTUM": 0.9,
-            "TA_BB_BREAK_LOWER": 0.7, # Potential reversal
-            "TA_STOCH_BULLISH_CROSS": 0.8,
+            # Strong bullish TA signals
+            "TA_MACD_CROSS_BULLISH": 1.5,
+            "TA_MA_CROSS_BULLISH": 1.3,
+            "TA_STOCH_BULLISH_CROSS": 1.0,
+            "TA_RSI_OVERSOLD": 0.9,
+            "TA_MACD_BULLISH_MOMENTUM": 0.8,
+            "TA_MACD_ZERO_CROSS_BULLISH": 0.8,
+            "TA_BB_BREAK_LOWER": 0.7,  # Potential reversal
             "TA_VOLUME_BREAKOUT_BULLISH": 0.6,
-            "TA_MACD_ZERO_CROSS_BULLISH": 0.7,
-            # Penalize bearish TA signals
-            "TA_MA_CROSS_BEARISH": -1.0,
-            "TA_RSI_OVERBOUGHT": -0.8,
-            "TA_MACD_CROSS_BEARISH": -1.2,
-            "TA_MACD_BEARISH_MOMENTUM": -0.9,
-            "TA_BB_BREAK_UPPER": -0.7, # Potential reversal
-            "TA_STOCH_BEARISH_CROSS": -0.8,
+            "TA_PRICE_NEAR_RECENT_LOW": 0.5,  # Potential bounce
+            
+            # Strong bearish TA signals
+            "TA_MACD_CROSS_BEARISH": -1.5,
+            "TA_MA_CROSS_BEARISH": -1.3,
+            "TA_STOCH_BEARISH_CROSS": -1.0,
+            "TA_RSI_OVERBOUGHT": -0.9,
+            "TA_MACD_BEARISH_MOMENTUM": -0.8,
+            "TA_MACD_ZERO_CROSS_BEARISH": -0.8,
+            "TA_BB_BREAK_UPPER": -0.7,  # Potential reversal
             "TA_VOLUME_BREAKOUT_BEARISH": -0.6,
-            "TA_MACD_ZERO_CROSS_BEARISH": -0.7,
+            "TA_PRICE_NEAR_RECENT_HIGH": -0.5,  # Potential pullback
         }
 
+    # Ensure we score ALL assets, not just those with signals
+    assets_to_score = set()
+    if all_available_assets:
+        assets_to_score.update(all_available_assets)
+    assets_to_score.update(asset_signals.keys())
+    
     asset_scores = []
-    for asset_symbol, signals in asset_signals.items():
+    for asset_symbol in assets_to_score:
+        signals = asset_signals.get(asset_symbol, [])  # Empty list if no signals
+        
         total_score = 0
+        weighted_confidence_sum = 0
+        total_weight_abs = 0
         num_bullish_signals = 0
         num_bearish_signals = 0
         highest_confidence_bullish = 0
+        highest_confidence_bearish = 0
+        signal_diversity_score = 0
+        
+        # Track signal types for diversity scoring
+        quant_signal_types = set()
+        ta_signal_types = set()
         
         for signal in signals:
             weight = 0
             if signal.signal_type.startswith("QUANT_"):
                 weight = quant_signal_weights.get(signal.signal_type, 0)
+                quant_signal_types.add(signal.signal_type)
             elif signal.signal_type.startswith("TA_"):
                 weight = ta_signal_weights.get(signal.signal_type, 0)
+                ta_signal_types.add(signal.signal_type)
             
-            score_contribution = weight * signal.confidence
+            # Calculate score contribution with confidence weighting
+            confidence = signal.confidence if signal.confidence is not None else 0.5
+            score_contribution = weight * confidence
             total_score += score_contribution
+            
+            # Track weighted confidence and total weights for normalization
+            weighted_confidence_sum += abs(weight) * confidence
+            total_weight_abs += abs(weight)
 
-            if weight > 0 : # Bullish signal
-                num_bullish_signals +=1
-                if signal.confidence > highest_confidence_bullish:
-                    highest_confidence_bullish = signal.confidence
-            elif weight < 0: # Bearish signal
-                num_bearish_signals +=1
+            if weight > 0:  # Bullish signal
+                num_bullish_signals += 1
+                if confidence > highest_confidence_bullish:
+                    highest_confidence_bullish = confidence
+            elif weight < 0:  # Bearish signal
+                num_bearish_signals += 1
+                if confidence > highest_confidence_bearish:
+                    highest_confidence_bearish = confidence
+        
+        # Calculate signal diversity bonus (having both quant and TA signals is good)
+        signal_diversity_score = len(quant_signal_types) * 0.1 + len(ta_signal_types) * 0.1
+        if len(quant_signal_types) > 0 and len(ta_signal_types) > 0:
+            signal_diversity_score += 0.2  # Bonus for having both types
+        
+        # Normalize score by total absolute weight to prevent bias toward assets with more signals
+        normalized_score = total_score
+        if total_weight_abs > 0:
+            # Add a small diversity bonus to the normalized score
+            normalized_score = total_score + signal_diversity_score
+        
+        # Calculate average confidence across all signals
+        avg_confidence = weighted_confidence_sum / total_weight_abs if total_weight_abs > 0 else 0
+        
+        # Calculate signal quality score (balance of bullish vs bearish)
+        signal_balance = num_bullish_signals - num_bearish_signals
+        signal_quality = (highest_confidence_bullish - highest_confidence_bearish) * 0.5
         
         asset_scores.append({
             "asset": asset_symbol,
-            "score": total_score,
+            "score": round(normalized_score, 6),
             "num_signals": len(signals),
             "num_bullish": num_bullish_signals,
             "num_bearish": num_bearish_signals,
-            "max_bullish_conf": highest_confidence_bullish
+            "max_bullish_conf": round(highest_confidence_bullish, 4),
+            "max_bearish_conf": round(highest_confidence_bearish, 4),
+            "avg_confidence": round(avg_confidence, 4),
+            "signal_balance": signal_balance,
+            "signal_quality": round(signal_quality, 4),
+            "signal_diversity": round(signal_diversity_score, 4),
+            "quant_signals": len(quant_signal_types),
+            "ta_signals": len(ta_signal_types)
         })
 
     if not asset_scores:
         return pd.DataFrame()
 
     ranked_df = pd.DataFrame(asset_scores)
-    # Prioritize assets with higher scores, more bullish signals, and higher confidence
-    ranked_df.sort_values(by=["score", "num_bullish", "max_bullish_conf", "num_bearish"], ascending=[False, False, False, True], inplace=True)
+    
+    # Enhanced sorting: prioritize score, then signal quality, then diversity
+    ranked_df.sort_values(
+        by=["score", "signal_quality", "signal_diversity", "avg_confidence", "num_bullish", "max_bullish_conf"], 
+        ascending=[False, False, False, False, False, False], 
+        inplace=True
+    )
+    
+    # Reset index after sorting
+    ranked_df.reset_index(drop=True, inplace=True)
+    
     return ranked_df
 
 
@@ -329,6 +408,7 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
                     chain_id=sig.chain_id if sig.chain_id is not None else chain_id, # Ensure chain_id is present
                     base_token_address=sig.base_token_address if sig.base_token_address is not None else "N/A", # Ensure base_token_address
                     signal_type=sig.signal_type,
+                    timeframe=timeframe, # Added timeframe
                     confidence=sig.confidence,
                     details=sig.details,
                     forecast_timestamp=current_forecast_time, # Timestamp of when this forecast batch was run
@@ -345,9 +425,13 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
             logger.error(f"Error storing forecast signals: {e}", exc_info=True)
             # Continue pipeline even if signal storage fails for now
 
-    # 2. Rank assets
+    # 2. Rank assets - now includes ALL assets, even those without signals
     logger.info("Ranking assets based on generated signals...")
-    ranked_assets_df = rank_assets_based_on_signals(all_asset_signals)
+    all_available_asset_symbols = list(ohlcv_data_dict.keys())  # All assets with OHLCV data
+    ranked_assets_df = rank_assets_based_on_signals(
+        all_asset_signals, 
+        all_available_assets=all_available_asset_symbols
+    )
     
     if ranked_assets_df.empty:
         logger.error("Asset ranking resulted in an empty DataFrame. Cannot select assets for portfolio.")
@@ -436,8 +520,8 @@ async def run_forecast_to_portfolio_pipeline( # Changed to async def
             "available_assets": all_available_assets,
             "total_assets_considered": len(all_available_assets),
              "mvo_inputs": { # Still return MVO inputs if they were calculated
-                "expected_returns": mvo_inputs["expected_returns"].to_dict() if not mvo_inputs["expected_returns"].empty else {},
-                "covariance_matrix": mvo_inputs["covariance_matrix"].to_dict() if not mvo_inputs["covariance_matrix"].empty else {},
+                "expected_returns": mvo_inputs["expected_returns"].to_dict() if not bool(mvo_inputs["expected_returns"].empty) else {},
+                "covariance_matrix": mvo_inputs["covariance_matrix"].to_dict() if not bool(mvo_inputs["covariance_matrix"].empty) else {},
                 "valid_symbols": mvo_inputs["valid_symbols"]
             }
         }
