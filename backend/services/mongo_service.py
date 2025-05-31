@@ -114,7 +114,6 @@ async def connect_to_mongo():
                 [
                     ("chain_id", pymongo.ASCENDING),
                     ("timeframe", pymongo.ASCENDING),
-                    ("num_top_assets", pymongo.ASCENDING),
                     ("mvo_objective", pymongo.ASCENDING),
                     ("risk_free_rate", pymongo.ASCENDING),
                     ("annualization_factor", pymongo.ASCENDING)
@@ -285,7 +284,6 @@ async def store_ohlcv_in_db(
 async def get_portfolio_from_cache(
     chain_id: int,
     timeframe: str,
-    num_top_assets: int,
     mvo_objective: str,
     risk_free_rate: float,
     annualization_factor: int
@@ -302,7 +300,6 @@ async def get_portfolio_from_cache(
     query = {
         "chain_id": chain_id,
         "timeframe": timeframe,
-        "num_top_assets": num_top_assets,
         "mvo_objective": mvo_objective,
         "risk_free_rate": risk_free_rate,
         "annualization_factor": annualization_factor
@@ -322,7 +319,7 @@ async def get_portfolio_from_cache(
                 last_updated_aware = last_updated_aware.replace(tzinfo=timezone.utc)
 
             if datetime.now(timezone.utc) - last_updated_aware < cache_duration:
-                logger.info(f"Found fresh portfolio data in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets, {mvo_objective}).")
+                logger.info(f"Found fresh portfolio data in cache for chain {chain_id} ({timeframe}, {mvo_objective}).")
                 
                 # Convert back to the expected format
                 portfolio_weights_dict = {pw.asset_symbol: pw.weight for pw in stored_portfolio.portfolio_weights}
@@ -332,17 +329,19 @@ async def get_portfolio_from_cache(
                         "weights": portfolio_weights_dict,
                         "expected_annual_return": stored_portfolio.expected_annual_return,
                         "annual_volatility": stored_portfolio.annual_volatility,
-                        "sharpe_ratio": stored_portfolio.sharpe_ratio
+                        "sharpe_ratio": stored_portfolio.sharpe_ratio,
+                        "assets_with_allocation": len(stored_portfolio.portfolio_weights),
+                        "total_assets_considered": stored_portfolio.total_assets_screened
                     },
                     "selected_for_portfolio": stored_portfolio.selected_assets,
-                    "total_assets_screened": stored_portfolio.total_assets_screened,
+                    "total_assets_considered": stored_portfolio.total_assets_screened,
                     "data_source": "cache"
                 }
             else:
                 logger.info(f"Found stale portfolio data in cache for chain {chain_id} ({timeframe}). Will re-calculate.")
                 return None
         else:
-            logger.info(f"No portfolio data found in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets, {mvo_objective}).")
+            logger.info(f"No portfolio data found in cache for chain {chain_id} ({timeframe}, {mvo_objective}).")
             return None
     except Exception as e:
         logger.error(f"Unexpected error during get_portfolio_from_cache: {e}", exc_info=True)
@@ -351,7 +350,6 @@ async def get_portfolio_from_cache(
 async def store_portfolio_in_cache(
     chain_id: int,
     timeframe: str,
-    num_top_assets: int,
     mvo_objective: str,
     risk_free_rate: float,
     annualization_factor: int,
@@ -372,7 +370,7 @@ async def store_portfolio_in_cache(
         optimized_portfolio = portfolio_result.get("optimized_portfolio", {})
         weights_dict = optimized_portfolio.get("weights", {})
         selected_assets = portfolio_result.get("selected_for_portfolio", [])
-        total_screened = portfolio_result.get("total_assets_screened", 0)
+        total_considered = portfolio_result.get("total_assets_considered", 0)
         
         # Convert weights dict to list of PortfolioWeights
         portfolio_weights = [
@@ -383,7 +381,7 @@ async def store_portfolio_in_cache(
         document_to_store = StoredPortfolioData(
             chain_id=chain_id,
             timeframe=timeframe,
-            num_top_assets=num_top_assets,
+            num_top_assets=len(selected_assets),  # Store actual number of assets with allocation
             mvo_objective=mvo_objective,
             risk_free_rate=risk_free_rate,
             annualization_factor=annualization_factor,
@@ -392,14 +390,13 @@ async def store_portfolio_in_cache(
             annual_volatility=optimized_portfolio.get("annual_volatility", 0.0),
             sharpe_ratio=optimized_portfolio.get("sharpe_ratio", 0.0),
             selected_assets=selected_assets,
-            total_assets_screened=total_screened,
+            total_assets_screened=total_considered,
             last_updated=datetime.now(timezone.utc)
         )
         
         query_filter = {
             "chain_id": chain_id,
             "timeframe": timeframe,
-            "num_top_assets": num_top_assets,
             "mvo_objective": mvo_objective,
             "risk_free_rate": risk_free_rate,
             "annualization_factor": annualization_factor
@@ -409,9 +406,9 @@ async def store_portfolio_in_cache(
 
         result = await collection.update_one(query_filter, update_data, upsert=True)
         if result.upserted_id:
-            logger.info(f"Inserted new portfolio data into cache for chain {chain_id} ({timeframe}, {num_top_assets} assets). ID: {result.upserted_id}")
+            logger.info(f"Inserted new portfolio data into cache for chain {chain_id} ({timeframe}, {len(selected_assets)} assets with allocation). ID: {result.upserted_id}")
         elif result.modified_count > 0:
-            logger.info(f"Updated existing portfolio data in cache for chain {chain_id} ({timeframe}, {num_top_assets} assets).")
+            logger.info(f"Updated existing portfolio data in cache for chain {chain_id} ({timeframe}, {len(selected_assets)} assets with allocation).")
         elif result.matched_count > 0 and result.modified_count == 0:
             logger.info(f"Portfolio data for chain {chain_id} ({timeframe}) matched but was identical, no update needed.")
         else:

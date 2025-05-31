@@ -11,13 +11,16 @@ from services.mongo_service import (
     connect_to_mongo,
     close_mongo_connection,
     get_ohlcv_from_db,
-    store_ohlcv_in_db
+    store_ohlcv_in_db,
+    get_portfolio_from_cache,
+    store_portfolio_in_cache
 )
 
 from models import FusionQuoteRequest, FusionOrderBuildRequest, FusionOrderSubmitRequest
 from services import one_inch_data_service
 from services import one_inch_fusion_service
 from configs import *
+from forecast.main_pipeline import run_forecast_to_portfolio_pipeline
 
 # Configure logging for the main application
 logger = logging.getLogger(__name__)
@@ -31,7 +34,7 @@ if not logger.handlers:
 
 app = FastAPI(
     title="1inch Token Screener API",
-    description="API to fetch popular tokens and their OHLCV data from 1inch, with MongoDB caching.",
+    description="API for DeFI Asset Management, Token Screening, and Portfolio Optimization",
     version="0.1.0"
 )
 
@@ -60,8 +63,8 @@ async def shutdown_app_clients():
 # --- END NEW EVENTS ---
 
 # Constants for the screener endpoint
-API_CALL_DELAY_SECONDS = 0.75 # Be respectful
-SCREENING_TIMEOUT_SECONDS = 60 # 1 minute timeout for entire screening process
+API_CALL_DELAY_SECONDS = 0.2 # Delay between 1inch API calls to avoid rate limiting
+SCREENING_TIMEOUT_SECONDS = 180 # Increased timeout for screening + OHLCV fetching
 
 @app.get("/screen_tokens/{chain_id}", response_model=List[Dict[str, Any]])
 async def screen_tokens_on_chain(
@@ -390,11 +393,173 @@ async def get_order_status(order_hash: str):
 async def root():
     return {"message": "Welcome to the 1inch API. Use /docs for API documentation."}
 
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info",
-    )
+@app.post("/portfolio/optimize/{chain_id}", summary="Screen, Forecast, and Optimize Portfolio", response_model=Dict[str, Any])
+async def get_optimized_portfolio_for_chain(
+    chain_id: int,
+    timeframe: str = Query("daily", enum=["hourly", "daily"], description="Timeframe for OHLCV data ('daily', 'hourly')."),
+    num_top_assets: int = Query(10, ge=2, le=20, description="Number of top assets for MVO (2-20). Min 2 for MVO."),
+    mvo_objective: str = Query("maximize_sharpe", enum=["maximize_sharpe", "minimize_volatility"], description="MVO objective function."),
+    risk_free_rate: float = Query(0.02, description="Risk-free rate for Sharpe ratio calculation."),
+    annualization_factor_override: Optional[int] = Query(None, ge=1, description="Optional: Override annualization factor for MVO (e.g., 365 for daily, 252 for trading days). Default is dynamic based on timeframe.")
+):
+    """
+    Full pipeline:
+    0. Check portfolio cache for existing results.
+    1. Screens tokens on the specified chain to get OHLCV data (fetches from 1inch & stores in DB if needed).
+    2. Runs forecasting models (TA & Quant) on the screened assets.
+    3. Ranks assets based on forecast signals.
+    4. Selects the top N assets.
+    5. Performs Mean-Variance Optimization (MVO) to determine optimal portfolio weights.
+    6. Caches the results for future requests.
+    """
+    logger.info(f"Received request for portfolio optimization: chain_id={chain_id}, timeframe={timeframe}, top_n={num_top_assets}, objective={mvo_objective}")
+
+    # 0. Check portfolio cache first
+    try:
+        cached_portfolio = await get_portfolio_from_cache(
+            chain_id=chain_id,
+            timeframe=timeframe,
+            mvo_objective=mvo_objective,
+            risk_free_rate=risk_free_rate,
+            annualization_factor=annualization_factor if annualization_factor_override is not None else (365 if timeframe.lower() == "daily" else 365 * 24)
+        )
+        
+        if cached_portfolio:
+            logger.info(f"✅ Returning cached portfolio results for chain {chain_id} ({timeframe}, {mvo_objective})")
+            return cached_portfolio
+        else:
+            logger.info(f"No fresh cached portfolio found. Proceeding with full pipeline...")
+    except Exception as e:
+        logger.warning(f"Error checking portfolio cache: {e}. Proceeding with full pipeline...")
+
+    # 1. Perform token screening (fetches and stores OHLCV)
+    try:
+        # Use the same timeout mechanism as the /screen_tokens endpoint
+        screener_results = await asyncio.wait_for(
+            _perform_token_screening(chain_id, timeframe),
+            timeout=SCREENING_TIMEOUT_SECONDS 
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Portfolio optimization pipeline: Token screening part timed out for chain {chain_id}.")
+        raise HTTPException(
+            status_code=408,
+            detail=f"Token screening phase timed out after {SCREENING_TIMEOUT_SECONDS} seconds. The chain might be too busy or have too many tokens."
+        )
+    except HTTPException as e: # Propagate HTTP exceptions from screening
+        logger.error(f"Portfolio optimization pipeline: HTTP error during token screening: {e.detail}")
+        raise e
+    except Exception as e:
+        logger.error(f"Portfolio optimization pipeline: Unexpected error during token screening: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during token screening: {str(e)}")
+
+
+    if not screener_results:
+        logger.warning(f"Portfolio optimization pipeline: No assets found or screened for chain {chain_id} and timeframe {timeframe}.")
+        raise HTTPException(status_code=404, detail="No assets found or screened for the given chain and timeframe.")
+
+    # 2. Prepare asset_identifiers for the forecasting pipeline
+    asset_identifiers: List[Dict[str, Any]] = []
+    valid_screened_assets_count = 0
+    for item in screener_results:
+        if item.get("ohlcv_data") and not item.get("error") and item.get("base_token_address") and item.get("quote_token_address") and item.get("base_token_symbol"):
+            # Construct a user-friendly asset symbol, e.g., "WETH-USDC"
+            # Quote symbol from screener might be "USDC_on_Ethereum", so take the part before "_"
+            quote_symbol_short = item.get("quote_token_symbol", "QUOTE").split('_')[0]
+            asset_symbol = f"{item['base_token_symbol']}-{quote_symbol_short}"
+            
+            asset_identifiers.append({
+                "asset_symbol": asset_symbol,
+                "base_token_address": item["base_token_address"],
+                "quote_token_address": item["quote_token_address"],
+                # The pipeline will use these to fetch the OHLCV data itself
+            })
+            valid_screened_assets_count += 1
+        else:
+            logger.debug(f"Skipping asset {item.get('base_token_symbol', 'N/A')} due to missing data or error: {item.get('error', 'N/A')}")
+            
+    if not asset_identifiers:
+        logger.error(f"Portfolio optimization pipeline: No valid assets with OHLCV data after screening for chain {chain_id}.")
+        raise HTTPException(status_code=404, detail="No assets with valid OHLCV data found after screening. Cannot proceed with forecasting.")
+    
+    logger.info(f"Portfolio optimization pipeline: Prepared {len(asset_identifiers)} valid assets for forecasting from {valid_screened_assets_count} screened results.")
+
+
+    # 3. Determine period_seconds and annualization_factor
+    if timeframe.lower() == "hourly":
+        period_seconds = PERIOD_HOURLY_SECONDS
+        default_annual_factor = 365 * 24 
+    elif timeframe.lower() == "daily":
+        period_seconds = PERIOD_DAILY_SECONDS
+        default_annual_factor = 365 
+    else: # Should not happen due to Query enum, but as a fallback
+        logger.warning(f"Invalid timeframe '{timeframe}' in optimize endpoint. Defaulting to daily period and annualization.")
+        period_seconds = PERIOD_DAILY_SECONDS
+        default_annual_factor = 252 # Common trading days
+        
+    annualization_factor = annualization_factor_override if annualization_factor_override is not None else default_annual_factor
+    
+    logger.info(f"Portfolio optimization pipeline: Using period_seconds={period_seconds}, annualization_factor={annualization_factor}.")
+
+    # 4. Run the forecast-to-portfolio pipeline
+    try:
+        # Ensure num_top_assets is not greater than the number of available valid assets
+        actual_num_top_assets = min(num_top_assets, len(asset_identifiers))
+        if actual_num_top_assets < 2 and len(asset_identifiers) >=2: # If user requested <2 but we have enough, use 2
+             actual_num_top_assets = 2
+        elif len(asset_identifiers) < 2: # Not enough assets for MVO at all
+            logger.error(f"Portfolio optimization pipeline: Not enough valid assets ({len(asset_identifiers)}) for MVO (min 2 required).")
+            raise HTTPException(status_code=400, detail=f"Not enough valid assets ({len(asset_identifiers)}) to perform MVO. Minimum 2 assets are required after screening.")
+
+
+        logger.info(f"Calling forecast pipeline with {len(asset_identifiers)} assets, requesting top {actual_num_top_assets} for MVO.")
+        
+        pipeline_result = await run_forecast_to_portfolio_pipeline(
+            asset_identifiers=asset_identifiers,
+            chain_id=chain_id,
+            period_seconds=period_seconds,
+            timeframe=timeframe,
+            num_top_assets_for_portfolio=actual_num_top_assets,
+            mvo_objective=mvo_objective,
+            risk_free_rate=risk_free_rate,
+            annualization_factor=annualization_factor
+        )
+    except Exception as e:
+        logger.error(f"Portfolio optimization pipeline: Error during forecast/MVO execution: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred during the forecasting or portfolio optimization process: {str(e)}")
+
+    if not pipeline_result:
+        logger.error("Portfolio optimization pipeline: Forecasting pipeline returned no result.")
+        raise HTTPException(status_code=500, detail="Forecasting and MVO pipeline did not return a result.")
+
+    if "error" in pipeline_result:
+        logger.error(f"Portfolio optimization pipeline: Pipeline completed with an error: {pipeline_result['error']}")
+        # Provide more context if available
+        detail_message = f"Pipeline error: {pipeline_result['error']}"
+        if "ranked_assets" in pipeline_result and pipeline_result["ranked_assets"]:
+             detail_message += " Asset ranking was performed. Check logs for details."
+        elif "selected_for_portfolio" in pipeline_result and pipeline_result["selected_for_portfolio"]:
+             detail_message += f" Assets selected: {pipeline_result['selected_for_portfolio']} but optimization may have failed."
+
+        raise HTTPException(status_code=422, detail=detail_message) # 422 for unprocessable entity due to data issues
+
+    logger.info("Portfolio optimization pipeline: Successfully completed.")
+    
+    # 6. Cache the successful results
+    if pipeline_result and "optimized_portfolio" in pipeline_result and not pipeline_result.get("error"):
+        try:
+            # Add total_assets_screened to the result for caching
+            pipeline_result["total_assets_screened"] = len(screener_results)
+            
+            await store_portfolio_in_cache(
+                chain_id=chain_id,
+                timeframe=timeframe,
+                mvo_objective=mvo_objective,
+                risk_free_rate=risk_free_rate,
+                annualization_factor=annualization_factor,
+                portfolio_result=pipeline_result
+            )
+            logger.info(f"✅ Portfolio results cached successfully for chain {chain_id}")
+        except Exception as e:
+            logger.warning(f"Failed to cache portfolio results: {e}. Returning results anyway.")
+    
+    return pipeline_result

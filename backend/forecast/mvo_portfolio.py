@@ -133,16 +133,41 @@ def optimize_portfolio_mvo(
         return None
 
     optimal_weights = result.x
-    # Normalize weights slightly if they are very close to sum 1 due to precision
+    # Normalize weights to ensure they sum to exactly 1.0
     optimal_weights /= np.sum(optimal_weights)
+    
+    # Create weights series
+    weights_series = pd.Series(optimal_weights, index=assets)
+    
+    # Filter out assets with zero or near-zero weights (less than 0.1%)
+    min_weight_threshold = 0.001  # 0.1%
+    non_zero_weights = weights_series[weights_series >= min_weight_threshold]
+    
+    if non_zero_weights.empty:
+        logger.warning("All optimized weights are below threshold. Returning top asset with 100% weight.")
+        # Fallback: give 100% to the asset with highest expected return
+        best_asset = expected_returns.idxmax()
+        non_zero_weights = pd.Series([1.0], index=[best_asset])
+    else:
+        # Renormalize the non-zero weights to sum to 1.0
+        non_zero_weights = non_zero_weights / non_zero_weights.sum()
+    
+    logger.info(f"Portfolio optimization result: {len(non_zero_weights)} assets with non-zero weights (filtered from {len(assets)} total assets)")
+    logger.info(f"Non-zero weights sum: {non_zero_weights.sum():.6f}")
 
-    # Calculate performance of the optimized portfolio
-    opt_return, opt_volatility = _calculate_portfolio_performance(optimal_weights, expected_returns, covariance_matrix)
+    # Calculate performance using the filtered weights
+    # Create a full weights array for performance calculation
+    full_weights = pd.Series(0.0, index=assets)
+    full_weights.loc[non_zero_weights.index] = non_zero_weights
+    
+    opt_return, opt_volatility = _calculate_portfolio_performance(full_weights.values, expected_returns, covariance_matrix)
     sharpe_ratio = (opt_return - risk_free_rate) / opt_volatility if opt_volatility > 1e-9 else 0
 
     return {
-        "weights": pd.Series(optimal_weights, index=assets),
+        "weights": non_zero_weights,  # Only return non-zero weights
         "expected_annual_return": opt_return,
         "annual_volatility": opt_volatility,
-        "sharpe_ratio": sharpe_ratio
+        "sharpe_ratio": sharpe_ratio,
+        "total_assets_considered": len(assets),
+        "assets_with_allocation": len(non_zero_weights)
     }
