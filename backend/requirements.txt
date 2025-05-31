@@ -17,3 +17,4 @@ httpx>=0.27.0
 # TA-Lib alternative that works better on macOS
 TA-Lib
 arch
+cvxpy

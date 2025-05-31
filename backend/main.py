@@ -1,9 +1,13 @@
 # app/main.py
 from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict, Any, Tuple
 import logging
 import time
 import asyncio
+import json
+import queue
+import threading
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -27,16 +31,87 @@ from forecast.main_pipeline import run_forecast_to_portfolio_pipeline, filter_no
 from forecast.quant_forecast import generate_quant_advanced_signals
 from forecast.ta_forecast import generate_ta_signals
 from forecast.mvo_portfolio import calculate_mvo_inputs, optimize_portfolio_mvo
+import numpy as np
+from contextlib import asynccontextmanager
+
+# Global log queue for streaming
+log_queue = queue.Queue()
+
+class LogStreamHandler(logging.Handler):
+    """Custom log handler that puts log records into a queue for streaming"""
+    
+    def emit(self, record):
+        try:
+            log_entry = {
+                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": self.format(record)
+            }
+            # Only keep last 1000 log entries to prevent memory issues
+            if log_queue.qsize() > 1000:
+                try:
+                    log_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            log_queue.put(log_entry)
+        except Exception:
+            # Avoid infinite recursion if logging the error fails
+            pass
+
+# Utility function to convert numpy types to Python native types
+def convert_numpy_types(obj):
+    """
+    Recursively convert numpy types to Python native types for JSON serialization.
+    """
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    else:
+        return obj
 
 # Configure logging for the main application
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-if not logger.handlers:
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+
+# Configure root logger first to ensure all loggers inherit the stream handler
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Add console handler to root logger if not already present
+if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers if not isinstance(h, LogStreamHandler)):
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    root_logger.addHandler(console_handler)
+
+# Add the streaming handler to root logger to catch all logs
+if not any(isinstance(h, LogStreamHandler) for h in root_logger.handlers):
+    root_stream_handler = LogStreamHandler()
+    root_stream_handler.setLevel(logging.INFO)
+    root_stream_formatter = logging.Formatter('%(message)s')
+    root_stream_handler.setFormatter(root_stream_formatter)
+    root_logger.addHandler(root_stream_handler)
+    
+    # Ensure all existing loggers also get the stream handler
+    for name in logging.Logger.manager.loggerDict:
+        existing_logger = logging.getLogger(name)
+        if existing_logger.level == logging.NOTSET:
+            existing_logger.setLevel(logging.INFO)
+        # Enable propagation to ensure logs reach the root logger
+        existing_logger.propagate = True
 
 app = FastAPI(
     title="1inch Token Screener API",
@@ -75,9 +150,198 @@ async def shutdown_app_clients():
     await one_inch_data_service.close_http_client()
     logger.info("Global HTTPX client closed.")
 
+# Log streaming endpoint
+@app.get("/logs/stream")
+async def stream_logs():
+    """
+    Server-Sent Events endpoint for streaming logs to the frontend
+    """
+    async def log_generator():
+        last_heartbeat = time.time()
+        heartbeat_interval = 5  # Send heartbeat every 5 seconds
+        
+        while True:
+            try:
+                # Get log entry from queue (non-blocking)
+                log_entry = log_queue.get_nowait()
+                yield f"data: {json.dumps(log_entry)}\n\n"
+                last_heartbeat = time.time()  # Reset heartbeat timer when we send actual logs
+            except queue.Empty:
+                # No logs available, check if we need to send heartbeat
+                current_time = time.time()
+                if current_time - last_heartbeat >= heartbeat_interval:
+                    heartbeat = {
+                        "type": "heartbeat",
+                        "timestamp": datetime.now().isoformat(),
+                        "message": "Log stream connection active"
+                    }
+                    yield f"data: {json.dumps(heartbeat)}\n\n"
+                    last_heartbeat = current_time
+                
+                # Wait a short time before checking again
+                await asyncio.sleep(0.1)  # 100ms delay
+            except Exception as e:
+                logger.error(f"Error in log stream: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'timestamp': datetime.now().isoformat()})}\n\n"
+                break
+
+    return StreamingResponse(
+        log_generator(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )
+
 # Constants for the screener endpoint
 API_CALL_DELAY_SECONDS = 0.2 # Delay between 1inch API calls to avoid rate limiting
 SCREENING_TIMEOUT_SECONDS = 180 # Increased timeout for screening + OHLCV fetching
+
+# Response models for the new endpoint
+class AssetDataResponse(BaseModel):
+    ohlcv_data: Optional[Dict[str, Any]] = None
+    forecast_signals: List[Dict[str, Any]] = []
+    error: Optional[str] = None
+    data_sources: Dict[str, str] = Field(default_factory=dict)  # Track where data came from
+
+@app.get("/api/asset_data", response_model=AssetDataResponse)
+async def get_cached_asset_data(
+    chain_id: int = Query(..., description="Chain ID"),
+    base_token_address: str = Query(..., description="Base token address"),
+    quote_token_address: str = Query(..., description="Quote token address"),
+    timeframe: str = Query("day", enum=["month", "week", "day", "hour4", "hour", "min15", "min5"], description="Timeframe for OHLCV data"),
+    period_seconds: Optional[int] = Query(None, description="Period in seconds (optional, derived from timeframe if not provided)"),
+    max_forecast_age_hours: int = Query(4, ge=1, le=24, description="Maximum age of forecast signals in hours"),
+    base_symbol_hint: Optional[str] = Query(None, description="Hint for base token symbol if OHLCV is not immediately found"),
+    quote_symbol_hint: Optional[str] = Query(None, description="Hint for quote token symbol if OHLCV is not immediately found")
+):
+    """
+    Fetches cached OHLCV data and forecast signals for a specific asset in a single response.
+    This endpoint prioritizes cached data from MongoDB and returns both OHLCV and forecast data together.
+    """
+    logger.info(f"Fetching cached asset data for chain {chain_id}, base: {base_token_address}, quote: {quote_token_address}, timeframe: {timeframe}, base_hint: {base_symbol_hint}, quote_hint: {quote_symbol_hint}")
+    
+    response = AssetDataResponse()
+    
+    # Map timeframe to period_seconds if not provided
+    if period_seconds is None:
+        timeframe_mapping = {
+            "min5": 300,
+            "min15": 900, 
+            "hour": 3600,
+            "hour4": 14400,
+            "day": 86400,
+            "week": 604800,
+            "month": 2592000
+        }
+        period_seconds = timeframe_mapping.get(timeframe.lower(), 86400)
+    
+    try:
+        # 1. Fetch OHLCV data from cache
+        logger.info(f"Fetching OHLCV data from MongoDB cache...")
+        ohlcv_result = await get_ohlcv_from_db(
+            chain_id=chain_id,
+            base_token_address=base_token_address,
+            quote_token_address=quote_token_address,
+            period_seconds=period_seconds,
+            timeframe=timeframe
+        )
+        
+        if ohlcv_result and ohlcv_result.get("data"):
+            response.ohlcv_data = {
+                "ohlcv_candles": ohlcv_result["data"],
+                "last_updated": ohlcv_result["last_updated"].isoformat() if ohlcv_result.get("last_updated") else None,
+                "chain_id": chain_id,
+                "base_token_address": base_token_address,
+                "quote_token_address": quote_token_address,
+                "timeframe": timeframe,
+                "period_seconds": period_seconds,
+                "base_token_symbol": ohlcv_result.get("base_token_symbol", ""),
+                "quote_token_symbol": ohlcv_result.get("quote_token_symbol", ""),
+                "chain_name": ohlcv_result.get("chain_name", "")
+            }
+            response.data_sources["ohlcv"] = "mongodb_cache"
+            logger.info(f"Found OHLCV data with {len(ohlcv_result['data'])} candles")
+        else:
+            response.data_sources["ohlcv"] = "not_found"
+            logger.warning(f"No OHLCV data found in cache")
+        
+        # 2. Construct asset symbol for forecast lookup
+        # Try to get symbols from OHLCV data first, then fallback to generic names
+        retrieved_base_symbol = None
+        retrieved_quote_symbol = None
+        retrieved_chain_name = CHAIN_ID_TO_NAME.get(chain_id, f"Chain{chain_id}")
+
+
+        if response.ohlcv_data:
+            retrieved_base_symbol = response.ohlcv_data.get("base_token_symbol")
+            retrieved_quote_symbol = response.ohlcv_data.get("quote_token_symbol")
+            retrieved_chain_name = response.ohlcv_data.get("chain_name", retrieved_chain_name)
+            logger.info(f"Symbols from OHLCV cache: base={retrieved_base_symbol}, quote={retrieved_quote_symbol}")
+        else:
+            # OHLCV data not found, use hints if available
+            if base_symbol_hint:
+                retrieved_base_symbol = base_symbol_hint
+                logger.info(f"Using base_symbol_hint: {base_symbol_hint}")
+            else:
+                retrieved_base_symbol = "TOKEN" # Fallback if no hint
+                logger.warning("No OHLCV data and no base_symbol_hint, defaulting base to TOKEN")
+            
+            if quote_symbol_hint:
+                retrieved_quote_symbol = quote_symbol_hint
+                logger.info(f"Using quote_symbol_hint: {quote_symbol_hint}")
+            else:
+                retrieved_quote_symbol = "QUOTE" # Fallback if no hint
+                logger.warning("No OHLCV data and no quote_symbol_hint, defaulting quote to QUOTE")
+        
+        # Construct global asset symbol (e.g., "ETH-USDC_on_Ethereum")
+        # Ensure retrieved symbols are not None before concatenation
+        final_base_symbol = retrieved_base_symbol if retrieved_base_symbol else "UNKNOWN_BASE"
+        final_quote_symbol = retrieved_quote_symbol if retrieved_quote_symbol else "UNKNOWN_QUOTE"
+        asset_symbol_global = f"{final_base_symbol}-{final_quote_symbol}_on_{retrieved_chain_name}"
+        
+        # 3. Fetch forecast signals from cache
+        logger.info(f"Fetching forecast signals for asset: {asset_symbol_global}")
+        forecast_signals = await get_recent_forecast_signals(
+            asset_symbol_global=asset_symbol_global,
+            chain_id=chain_id,
+            timeframe=timeframe, # Pass the timeframe
+            max_forecast_age_hours=max_forecast_age_hours
+        )
+        
+        if forecast_signals:
+            response.forecast_signals = [
+                {
+                    "signal_type": signal.signal_type,
+                    "confidence": signal.confidence,
+                    "details": signal.details,
+                    "forecast_timestamp": signal.forecast_timestamp,
+                    "ohlcv_data_timestamp": signal.ohlcv_data_timestamp,
+                    "asset_symbol": signal.asset_symbol,
+                    "chain_id": signal.chain_id,
+                    "base_token_address": signal.base_token_address
+                }
+                for signal in forecast_signals
+            ]
+            response.data_sources["forecasts"] = "mongodb_cache"
+            logger.info(f"Found {len(forecast_signals)} forecast signals")
+        else:
+            response.data_sources["forecasts"] = "not_found"
+            logger.info(f"No recent forecast signals found for {asset_symbol_global}")
+        
+        # 4. Check if we have any data at all
+        if not response.ohlcv_data and not response.forecast_signals:
+            response.error = f"No cached OHLCV data or forecast signals found for the specified asset on chain {chain_id}"
+            logger.warning(response.error)
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error fetching cached asset data: {e}", exc_info=True)
+        response.error = f"An error occurred while fetching cached asset data: {str(e)}"
+        return response
 
 @app.get("/screen_tokens/{chain_id}", response_model=List[Dict[str, Any]])
 async def screen_tokens_on_chain(
@@ -93,39 +357,45 @@ async def screen_tokens_on_chain(
     
     The process is limited to a configurable number of tokens and has a timeout for efficiency.
     """
-    # Reduced to 50 tokens for faster processing (was 30)
-    default_max_tokens_for_screening_endpoint = 50
-    return await asyncio.wait_for(
-        _perform_token_screening(chain_id, timeframe, default_max_tokens_for_screening_endpoint),
-        timeout=SCREENING_TIMEOUT_SECONDS
-    )
-
-async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_screen: int) -> List[Dict[str, Any]]:
-    start_time = time.time()
-    chain_name = CHAIN_ID_TO_NAME.get(chain_id, "Unknown Chain")
-    
-    # Determine period_seconds from timeframe and map to 1inch API format
-    timeframe_mapping = {
-        "min5": ("5min", 300),
-        "min15": ("15min", 900), 
+    # Map timeframe to 1inch API format and determine period_seconds
+    timeframe_config = {
+        "min5": ("min5", 300),
+        "min15": ("min15", 900),
         "hour": ("hour", 3600),
-        "hour4": ("4hour", 14400),
+        "hour4": ("hour4", 14400),
         "day": ("day", 86400),
         "week": ("week", 604800),
-        "month": ("month", 2592000)  # Approx 30 days
+        "month": ("month", 2592000)
     }
     
     timeframe_lower = timeframe.lower()
-    if timeframe_lower in timeframe_mapping:
-        api_timeframe, period_seconds = timeframe_mapping[timeframe_lower]
-        # Update timeframe to match 1inch API format for downstream usage
-        timeframe = api_timeframe
-    else:
-        logger.warning(f"Invalid timeframe '{timeframe}' received. Defaulting to day (86400s).")
-        period_seconds = 86400
-        timeframe = "day" # Ensure timeframe string is also defaulted for consistency
+    if timeframe_lower in timeframe_config:
+        api_timeframe, period_seconds = timeframe_config[timeframe_lower]
+    else: 
+        logger.warning(f"Invalid timeframe '{timeframe}' in screen_tokens endpoint. Defaulting to daily.")
+        api_timeframe, period_seconds = "day", 86400
+    
+    # Reduced to 50 tokens for faster processing (was 30)
+    default_max_tokens_for_screening_endpoint = 50
+    return await asyncio.wait_for(
+        _perform_token_screening(chain_id, api_timeframe, period_seconds, default_max_tokens_for_screening_endpoint),
+        timeout=SCREENING_TIMEOUT_SECONDS
+    )
+
+async def _perform_token_screening(
+    chain_id: int,
+    timeframe_granularity_arg: str, # This is the 1inch API format, e.g., "15min", "day"
+    period_seconds_arg: int,       # The corresponding period_seconds
+    max_tokens_to_screen: int
+) -> List[Dict[str, Any]]:
+    start_time = time.time()
+    chain_name = CHAIN_ID_TO_NAME.get(chain_id, "Unknown Chain")
+    
+    # timeframe_granularity_arg is the format needed for 1inch API (e.g., "15min", "day")
+    # period_seconds_arg is used for DB operations and result metadata.
+    # No further mapping of timeframe_granularity_arg is needed here for 1inch calls.
         
-    logger.info(f"Starting token screening for chain: {chain_name} (ID: {chain_id}) with timeframe='{timeframe}' (period: {period_seconds}s) - Timeout: {SCREENING_TIMEOUT_SECONDS}s")
+    logger.info(f"Starting token screening for chain: {chain_name} (ID: {chain_id}) with timeframe_granularity='{timeframe_granularity_arg}' (period: {period_seconds_arg}s) - Timeout: {SCREENING_TIMEOUT_SECONDS}s")
 
     if not one_inch_data_service.API_KEY or one_inch_data_service.API_KEY == "PrA0uavUMpVOig4aopY0MQMqti3gO19d":
          logger.warning("API Key is not properly set or is using the default placeholder. Results may be limited or fail.")
@@ -198,7 +468,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
             "quote_token_address": None,
             "quote_token_symbol": None,
             "short_quote_token_symbol": None,
-            "period_seconds": period_seconds,
+            "period_seconds": period_seconds_arg, # Use passed period_seconds_arg
             "ohlcv_data": None,
             "data_source": "api", # Will be updated if from DB
             "error": "No suitable quote token (USDC/USDT) configured or all attempts failed."
@@ -250,7 +520,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
             logger.info(f"Processing OHLCV for {pair_desc} (using {short_quote_symbol}, attempt {attempt_idx + 1}/{len(potential_quotes)})...")
 
             db_check_result = await get_ohlcv_from_db(
-                chain_id, base_token_address, quote_address, period_seconds, timeframe
+                chain_id, base_token_address, quote_address, period_seconds_arg, timeframe_granularity_arg # Use arguments
             )
             
             latest_known_timestamp_from_db: Optional[int] = None
@@ -297,7 +567,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                 ohlcv_api_response = await one_inch_data_service.get_ohlcv_data(
                     base_token_address=base_token_address, 
                     quote_token_address=quote_address, 
-                    timeframe_granularity=timeframe, # This is like "day", "hour"
+                    timeframe_granularity=timeframe_granularity_arg, # Use directly
                     chain_id=chain_id,
                     limit=1000 # Max candles
                 )
@@ -318,7 +588,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     if api_candles: 
                         await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
-                            period_seconds, timeframe, api_candles,
+                            period_seconds_arg, timeframe_granularity_arg, api_candles, # Use arguments
                             base_token_symbol=base_token_symbol,
                             quote_token_symbol=short_quote_symbol,
                             chain_name=chain_name,
@@ -344,7 +614,7 @@ async def _perform_token_screening(chain_id: int, timeframe: str, max_tokens_to_
                     if api_candles:
                         await store_ohlcv_in_db(
                             chain_id, base_token_address, quote_address, 
-                            period_seconds, timeframe, api_candles,
+                            period_seconds_arg, timeframe_granularity_arg, api_candles, # Use arguments
                             base_token_symbol=base_token_symbol,
                             quote_token_symbol=short_quote_symbol,
                             chain_name=chain_name,
@@ -507,11 +777,20 @@ async def get_order_status(order_hash: str):
 async def root():
     return {"message": "Welcome to the 1inch API. Use /docs for API documentation."}
 
+@app.get("/test-logs")
+async def test_logs():
+    """Test endpoint to verify log streaming is working"""
+    logger.info("🧪 Test log message from /test-logs endpoint")
+    logger.warning("⚠️ Test warning message")
+    logger.error("❌ Test error message")
+    return {"message": "Test logs sent to stream"}
+
 async def process_single_chain_data_gathering(
     chain_id_to_process: int,
-    timeframe_to_use: str,
+    timeframe_to_use: str, # This will be the 1inch API format, e.g., "15min", "day"
+    period_seconds_to_use: int, # Corresponding period_seconds
     max_tokens_to_screen_for_chain: int,
-    chain_name_map: Dict[int, str] # Pass CHAIN_ID_TO_NAME for consistent naming
+    chain_name_map: Dict[int, str]
 ) -> Tuple[int, str, List[Dict[str, Any]], Optional[str]]: # chain_id, chain_name, list_of_asset_data, error_message
     """
     Fetches screener results (including OHLCV data as DataFrames) for a single chain.
@@ -519,14 +798,19 @@ async def process_single_chain_data_gathering(
     chain_start_time = time.time()
     # Use the passed chain_name_map for consistency
     chain_name = chain_name_map.get(chain_id_to_process, f"Unknown Chain ({chain_id_to_process})")
-    logger.info(f"Data gathering: Starting for chain: {chain_name} (ID: {chain_id_to_process})")
+    logger.info(f"Data gathering: Starting for chain: {chain_name} (ID: {chain_id_to_process}), timeframe_1inch_format='{timeframe_to_use}', period_seconds='{period_seconds_to_use}'")
 
     asset_data_for_chain: List[Dict[str, Any]] = []
     error_message_for_this_chain: Optional[str] = None
 
     try:
         screener_results = await asyncio.wait_for(
-            _perform_token_screening(chain_id_to_process, timeframe_to_use, max_tokens_to_screen_for_chain),
+            _perform_token_screening(
+                chain_id_to_process,
+                timeframe_to_use, # Pass the 1inch API timeframe format
+                period_seconds_to_use, # Pass the corresponding period_seconds
+                max_tokens_to_screen_for_chain
+            ),
             timeout=SCREENING_TIMEOUT_SECONDS
         )
 
@@ -628,6 +912,10 @@ async def get_optimized_portfolios_for_chains(
     target_return: Optional[float] = Query(None, description="Target annualized return (e.g., 0.8 for 80%) for 'minimize_volatility'.")
 ):
     main_request_start_time = time.time()
+    
+    # Add a test log to verify log streaming is working
+    logger.info("🚀 Portfolio optimization request received - starting cross-chain analysis")
+    
     try:
         chain_ids_input_list = [int(c.strip()) for c in chain_ids_str.split(',') if c.strip()]
         if not chain_ids_input_list: raise ValueError("No chain IDs provided.")
@@ -639,7 +927,7 @@ async def get_optimized_portfolios_for_chains(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid chain_ids: {e}")
 
-    logger.info(f"Cross-Chain Global MVO Request: chain_ids_str='{consistent_chain_ids_str}', timeframe={timeframe}, max_tokens_per_chain={max_tokens_per_chain}, objective={mvo_objective}")
+    logger.info(f"Cross-Chain Global MVO Request: chain_ids_str='{consistent_chain_ids_str}', timeframe input query='{timeframe}', max_tokens_per_chain={max_tokens_per_chain}, objective={mvo_objective}")
 
     # Attempt to retrieve from cache first
     try:
@@ -662,10 +950,10 @@ async def get_optimized_portfolios_for_chains(
 
     # Map timeframe to 1inch API format and determine period_seconds/annualization
     timeframe_config = {
-        "min5": ("5min", 300, 365 * 24 * 12),
-        "min15": ("15min", 900, 365 * 24 * 4),
+        "min5": ("min5", 300, 365 * 24 * 12),
+        "min15": ("min15", 900, 365 * 24 * 4),
         "hour": ("hour", 3600, 365 * 24),
-        "hour4": ("4hour", 14400, 365 * 6),
+        "hour4": ("hour4", 14400, 365 * 6),
         "day": ("day", 86400, 365),
         "week": ("week", 604800, 52),
         "month": ("month", 2592000, 12)
@@ -673,19 +961,29 @@ async def get_optimized_portfolios_for_chains(
     
     timeframe_lower = timeframe.lower()
     if timeframe_lower in timeframe_config:
-        api_timeframe, period_seconds, default_annual_factor = timeframe_config[timeframe_lower]
-        # Update timeframe to match 1inch API format for downstream usage
-        timeframe = api_timeframe
+        api_timeframe_for_screening, period_seconds, default_annual_factor = timeframe_config[timeframe_lower]
+        # Update 'timeframe' variable to the 1inch API format (e.g. "15min") for consistency in logging,
+        # forecast signal storage/retrieval, and cache keys later in this function.
+        timeframe = api_timeframe_for_screening 
     else: 
-        period_seconds, default_annual_factor = 86400, 365 # Default to day
-        timeframe = "day"
+        # This block should ideally not be hit if frontend sends valid enum values like "min15", "day"
+        logger.error(f"Invalid timeframe '{timeframe_lower}' received in optimize_cross_chain endpoint, not found in timeframe_config. Defaulting to 'day'. This indicates an issue with frontend value or enum constraint.")
+        api_timeframe_for_screening, period_seconds, default_annual_factor = timeframe_config["day"] # Fallback
+        timeframe = "day" # Fallback for 'timeframe' variable as well
 
+    logger.info(f"Mapped input timeframe '{timeframe_lower}' to api_timeframe_for_screening='{api_timeframe_for_screening}' and period_seconds='{period_seconds}'. Variable 'timeframe' is now '{timeframe}'.")
     annualization_factor = annualization_factor_override if annualization_factor_override is not None else default_annual_factor
 
     # --- Step 1: Concurrently gather screened asset data from all chains ---
     logger.info("Starting concurrent data gathering for all specified chains...")
     data_gathering_tasks = [
-        process_single_chain_data_gathering(cid, timeframe, max_tokens_per_chain, CHAIN_ID_TO_NAME) for cid in chain_ids_input_list # Use the list here
+        process_single_chain_data_gathering(
+            cid,
+            api_timeframe_for_screening, # This is the 1inch API format e.g. "15min"
+            period_seconds,              # The corresponding period in seconds
+            max_tokens_per_chain,
+            CHAIN_ID_TO_NAME
+        ) for cid in chain_ids_input_list # Use the list here
     ]
     gathered_chain_data_results = await asyncio.gather(*data_gathering_tasks, return_exceptions=True)
 
@@ -785,6 +1083,7 @@ async def get_optimized_portfolios_for_chains(
         retrieved_db_signals: Optional[List[ForecastSignalRecord]] = await get_recent_forecast_signals(
             asset_symbol_global=asset_symbol_g, 
             chain_id=original_chain_id_for_signal,
+            timeframe=timeframe, # Pass the timeframe determined for the cross-chain request
             max_forecast_age_hours=MAX_FORECAST_AGE_HOURS
         )
 
@@ -847,6 +1146,7 @@ async def get_optimized_portfolios_for_chains(
                 base_token_symbol=base_s,
                 quote_token_symbol=quote_s,
                 signal_type=sig_g.signal_type, 
+                timeframe=timeframe, # Added timeframe
                 confidence=sig_g.confidence, 
                 details=sig_g.details,
                 forecast_timestamp=current_forecast_time_global, 
@@ -860,7 +1160,11 @@ async def get_optimized_portfolios_for_chains(
 
     # --- Step 4: Global Ranking ---
     logger.info("Performing global asset ranking...")
-    global_ranked_assets_df = rank_assets_based_on_signals(global_all_signals)
+    all_global_asset_symbols = list(ohlcv_data_global.keys())  # All assets with OHLCV data
+    global_ranked_assets_df = rank_assets_based_on_signals(
+        global_all_signals,
+        all_available_assets=all_global_asset_symbols
+    )
     if global_ranked_assets_df.empty: 
         # Check if global_all_signals was empty due to prior filtering
         if not global_all_signals: 
@@ -1057,12 +1361,15 @@ async def get_optimized_portfolio_for_chain(
 
     # 0. Check portfolio cache first
     try:
+        # Calculate annualization_factor for cache lookup
+        temp_annualization_factor = annualization_factor_override if annualization_factor_override is not None else 365
+        
         cached_portfolio = await get_portfolio_from_cache(
             chain_id=chain_id,
             timeframe=timeframe,
             mvo_objective=mvo_objective,
             risk_free_rate=risk_free_rate,
-            annualization_factor=annualization_factor if annualization_factor_override is not None else (365 if timeframe.lower() == "daily" else 365 * 24)
+            annualization_factor=temp_annualization_factor
         )
         
         if cached_portfolio:
@@ -1124,10 +1431,10 @@ async def get_optimized_portfolio_for_chain(
 
     # 3. Determine period_seconds and annualization_factor, map to 1inch API format
     timeframe_config = {
-        "min5": ("5min", 300, 365 * 24 * 12),
-        "min15": ("15min", 900, 365 * 24 * 4),
+        "min5": ("min5", 300, 365 * 24 * 12),
+        "min15": ("min15", 900, 365 * 24 * 4),
         "hour": ("hour", 3600, 365 * 24),
-        "hour4": ("4hour", 14400, 365 * 6),
+        "hour4": ("hour4", 14400, 365 * 6),
         "day": ("day", 86400, 365),
         "week": ("week", 604800, 52),
         "month": ("month", 2592000, 12)

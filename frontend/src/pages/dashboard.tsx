@@ -267,7 +267,6 @@ const Dashboard: NextPage = () => {
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <ConnectButton />
                 </CardContent>
             </Card>
           ) : (
@@ -375,14 +374,26 @@ const Dashboard: NextPage = () => {
                       <>
                         <OverallRequestSummaryCard summary={portfolioData.overall_request_summary} />
                         
-                        {/* Dropdown to select MVO objective for display */}
+                        <RankedAssetsSummaryCard 
+                          assets={globalPortfolioData.data.ranked_assets_summary} 
+                          chainName={globalPortfolioData.chain_name} 
+                          onAssetSelect={handleAssetSelect} // Pass the handler
+                        />
+                        
+                        {/* Dropdown to select MVO objective for display - moved below ranked assets */}
                         {mvoDisplayOptions.length > 1 && (
-                            <Card className="bg-slate-800 border-slate-700 text-gray-300">
-                                <CardHeader className="pb-2 pt-4 px-4">
-                                    <CardTitle className="text-md font-semibold text-white">View Portfolio Results For:</CardTitle>
+                            <Card className="bg-gradient-to-r from-slate-800 to-slate-700 border-slate-600 text-gray-300 shadow-lg">
+                                <CardHeader className="pb-3 pt-5 px-6">
+                                    <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
+                                        <BarChart className="h-5 w-5 text-emerald-400" />
+                                        View Portfolio Results For:
+                                    </CardTitle>
+                                    <CardDescription className="text-slate-300">
+                                        Switch between different optimization strategies to compare results.
+                                    </CardDescription>
                                 </CardHeader>
-                                <CardContent className="pb-4 px-4">
-                                    <div className="flex flex-wrap gap-2">
+                                <CardContent className="pb-5 px-6">
+                                    <div className="flex flex-wrap gap-3">
                                         {mvoDisplayOptions.map(option => (
                                             <Button
                                                 key={option.id}
@@ -390,8 +401,8 @@ const Dashboard: NextPage = () => {
                                                 onClick={() => setDisplayedMVOObjective(option.id)}
                                                 className={
                                                     displayedMVOObjective === option.id 
-                                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' 
-                                                    : 'bg-slate-700 hover:bg-slate-600 border-slate-600 text-gray-200 hover:text-white'
+                                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-md transform hover:scale-105 transition-all duration-200' 
+                                                    : 'bg-slate-700/50 hover:bg-slate-600 border-slate-500 text-gray-200 hover:text-white hover:border-slate-400 transition-all duration-200'
                                                 }
                                             >
                                                 {option.name}
@@ -401,50 +412,29 @@ const Dashboard: NextPage = () => {
                                 </CardContent>
                             </Card>
                         )}
-
-                        <RankedAssetsSummaryCard 
-                          assets={globalPortfolioData.data.ranked_assets_summary} 
+                        
+                        <OptimizedPortfolioDetailsCard 
+                          details={{
+                            ...portfolioDetailsToDisplay,
+                            asset_details_map: globalPortfolioData.data.ranked_assets_summary.reduce((acc, asset) => {
+                              acc[asset.asset] = asset;
+                              return acc;
+                            }, {} as { [key: string]: RankedAssetSummary })
+                          }} 
                           chainName={globalPortfolioData.chain_name} 
-                          onAssetSelect={handleAssetSelect} // Pass the handler
+                          onAssetSelect={handleAssetSelect}
                         />
-                        <OptimizedPortfolioDetailsCard details={portfolioDetailsToDisplay} chainName={globalPortfolioData.chain_name} />
                         <MVOInputsSummaryCard 
                           summary={globalPortfolioData.data.mvo_inputs_summary} 
                           chainName={globalPortfolioData.chain_name} 
                           covarianceMatrix={portfolioDetailsToDisplay.covariance_matrix_optimized} // Use displayed portfolio's covariance
+                          efficientFrontierPlot={ // Pass the plot as a prop
+                            <EfficientFrontierPlot 
+                              primaryPortfolio={globalPortfolioData.data.optimized_portfolio_details}
+                              alternativePortfolios={globalPortfolioData.data.alternative_optimized_portfolios}
+                            />
+                          }
                         />
-                        <EfficientFrontierPlot 
-                          primaryPortfolio={globalPortfolioData.data.optimized_portfolio_details}
-                          alternativePortfolios={globalPortfolioData.data.alternative_optimized_portfolios}
-                        />
-                      
-                        {/* Placeholder for Individual Asset Details - More detailed UI */}
-                        <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-800 bg-slate-800 border-slate-700">
-                          <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-white">
-                              <Database className="h-6 w-6 text-white" />
-                              General Information (Placeholder)
-                              </CardTitle>
-                            <CardDescription className="text-slate-300">Further details or global charts could appear here when no specific asset is selected for deep dive.</CardDescription>
-                          </CardHeader>
-                          <CardContent className="min-h-[150px] flex items-center justify-center">
-                            <p className="text-slate-500 italic">Click an asset in the &apos;Ranked Assets Summary&apos; to see a detailed deep dive.</p>
-                          </CardContent>
-                        </Card>
-
-                        {/* Placeholder for Benchmark Comparison - More detailed UI */}
-                        <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-1000 bg-slate-800 border-slate-700">
-                          <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-white">
-                              <Activity className="h-6 w-6 text-white" />
-                              Performance vs. Benchmarks (Placeholder)
-                              </CardTitle>
-                            <CardDescription className="text-slate-300">Track your portfolio&apos;s performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
-                          </CardHeader>
-                          <CardContent className="min-h-[150px] flex items-center justify-center">
-                            <p className="text-slate-500 italic">Comparative performance charts and detailed metrics will be displayed here.</p>
-                          </CardContent>
-                        </Card>
                       </>
                     )
                   )}

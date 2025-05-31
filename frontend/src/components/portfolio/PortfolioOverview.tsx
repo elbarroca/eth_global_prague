@@ -19,8 +19,9 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { TrendingUp, TrendingDown, DollarSign, Coins } from 'lucide-react'
-import EthereumIcon from '@/components/icons/EthereumIcon'
 import React from 'react'
+import EthereumIcon from '@/components/icons/EthereumIcon'
+import { LiquidatePortfolioButton } from '../optimizer/LiquidatePorfolioButton'
 
 // Mock data for charts
 const performanceData = [
@@ -240,6 +241,17 @@ export function PortfolioOverview() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Liquidate Portfolio Button - Added Section */}
+      <div className="mt-8 pt-6 border-t border-slate-700/60">
+        <LiquidatePortfolioButton 
+          portfolioWeights={Object.fromEntries(
+            portfolio.assets.map(asset => [asset.id, 1 / portfolio.assets.length]) // Mock percentage
+          )} 
+          selectedChains={Array.from(new Set(portfolio.assets.map(asset => asset.chain)))}
+        />
+      </div>
+
     </div>
   )
 } 

@@ -17,9 +17,10 @@ interface MVOInputsSummaryCardProps {
   summary: MVOInputsSummary;
   chainName: string;
   covarianceMatrix?: OptimizedPortfolioDetails['covariance_matrix_optimized'];
+  efficientFrontierPlot?: React.ReactNode;
 }
 
-export const MVOInputsSummaryCard: React.FC<MVOInputsSummaryCardProps> = ({ summary, chainName, covarianceMatrix }) => {
+export const MVOInputsSummaryCard: React.FC<MVOInputsSummaryCardProps> = ({ summary, chainName, covarianceMatrix, efficientFrontierPlot }) => {
   const topReturns = Object.entries(summary.expected_returns_top_n)
     .sort(([,a],[,b]) => b-a)
     .slice(0, 10); // Display top 10 or fewer based on API response
@@ -86,6 +87,11 @@ export const MVOInputsSummaryCard: React.FC<MVOInputsSummaryCardProps> = ({ summ
             </div>
             )}
         </div>
+        {efficientFrontierPlot && (
+          <div className="mt-6 pt-4 border-t border-slate-700">
+            {efficientFrontierPlot}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

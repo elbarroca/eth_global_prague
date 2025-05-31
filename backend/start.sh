@@ -7,9 +7,25 @@ echo "================================="
 # Check for .env file
 if [ ! -f ".env" ]; then
     echo "Creating .env file..."
-    echo "ONE_INCH_API_KEY=your_api_key_here" > .env
+    cat > .env << EOF
+# 1inch API Configuration
+ONE_INCH_API_KEY=your_api_key_here
+
+# MongoDB Configuration
+MONGO_URI=mongodb://localhost:27017
+DATABASE_NAME=portfolio_optimizer
+
+# Optional: Set log level
+LOG_LEVEL=INFO
+EOF
     echo ".env file created. Please edit it to add your actual API key."
     echo ""
+fi
+
+# Load environment variables from .env file
+if [ -f ".env" ]; then
+    echo "Loading environment variables from .env file..."
+    export $(cat .env | grep -v '^#' | xargs)
 fi
 
 # Check for Python virtual environment

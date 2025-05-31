@@ -93,9 +93,9 @@ GRANULARITY_MAP_PORTFOLIO_V2 = {
     "1h": "hour",
     "day": "day",
     "hour": "hour",
-    "hour4": "hour4",
-    "min15": "min15",
-    "min5": "min5",
+    "hour4": "4hour",
+    "min15": "15min",
+    "min5": "5min",
     "week": "week",
     "month": "month"
 }
@@ -220,13 +220,13 @@ async def get_ohlcv_data(
     current_timestamp = int(time_module.time())
     
     # Calculate period duration in seconds based on granularity
-    if granularity_api_value == "min5":
+    if granularity_api_value == "5min":
         period_seconds = 300
-    elif granularity_api_value == "min15":
+    elif granularity_api_value == "15min":
         period_seconds = 900
     elif granularity_api_value == "hour":
         period_seconds = 3600
-    elif granularity_api_value == "hour4":
+    elif granularity_api_value == "4hour":
         period_seconds = 14400
     elif granularity_api_value == "day":
         period_seconds = 86400
