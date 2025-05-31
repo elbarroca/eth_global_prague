@@ -245,8 +245,9 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                     chain_id=chain_id,
                     limit=1000
                 )
-                if ohlcv_api_response and "data" in ohlcv_api_response:
-                    api_candles = ohlcv_api_response["data"]
+                # The Portfolio API v2 returns data directly, not nested under "data"
+                if ohlcv_api_response and isinstance(ohlcv_api_response, list):
+                    api_candles = ohlcv_api_response
                     current_result["ohlcv_data"] = api_candles
                     current_result["error"] = None
                     current_result["data_source"] = "api"
@@ -263,10 +264,28 @@ async def _perform_token_screening(chain_id: int, timeframe: str) -> List[Dict[s
                             period_seconds, timeframe, api_candles
                         )
                     else: # API returned success but empty data array
-                        logger.warning(f"API returned success but 'data' array is empty for {pair_desc}. Not storing in DB.")
+                        logger.warning(f"API returned success but data array is empty for {pair_desc}. Not storing in DB.")
                     break 
+                elif ohlcv_api_response and isinstance(ohlcv_api_response, dict) and "data" in ohlcv_api_response:
+                    # Fallback: some APIs might still use nested "data" structure
+                    api_candles = ohlcv_api_response["data"]
+                    current_result["ohlcv_data"] = api_candles
+                    current_result["error"] = None
+                    current_result["data_source"] = "api"
+                    current_result["quote_token_address"] = quote_address
+                    current_result["quote_token_symbol"] = quote_symbol
+
+                    logger.info(f"Successfully fetched {len(api_candles)} candles for {pair_desc} from API (nested data).")
+                    ohlcv_fetched_successfully = True
+                    
+                    if api_candles:
+                        await store_ohlcv_in_db(
+                            chain_id, base_token_address, quote_address, 
+                            period_seconds, timeframe, api_candles
+                        )
+                    break
                 else:
-                    logger.warning(f"OHLCV data for {pair_desc} (with {quote_name}) was fetched but 'data' array is empty or missing in API response.")
+                    logger.warning(f"OHLCV data for {pair_desc} (with {quote_name}) was fetched but data is empty, not a list, or in unexpected format. Response type: {type(ohlcv_api_response)}")
                     last_error_message_for_token = f"OHLCV data missing/empty from API (with {quote_name})."
                     current_result["error"] = last_error_message_for_token
             

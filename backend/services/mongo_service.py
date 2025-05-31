@@ -229,8 +229,14 @@ async def store_ohlcv_in_db(
     parsed_candles = []
     for candle_data in ohlcv_candles_data:
         try:
+            # Handle both 'timestamp' (1inch Portfolio API v2) and 'time' (legacy) field names
+            timestamp_value = candle_data.get("timestamp") or candle_data.get("time")
+            if timestamp_value is None:
+                logger.error(f"Skipping candle data with missing timestamp/time field: {candle_data}")
+                continue
+                
             parsed_candles.append(OHLVCRecord(
-                time=int(candle_data.get("time")),
+                time=int(timestamp_value),
                 open=float(candle_data.get("open")),
                 high=float(candle_data.get("high")),
                 low=float(candle_data.get("low")),

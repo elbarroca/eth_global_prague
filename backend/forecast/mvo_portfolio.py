@@ -158,9 +158,9 @@ def optimize_portfolio_mvo(
 
     return {
         "weights": non_zero_weights,  # Only return non-zero weights
-        "expected_annual_return": opt_return,
-        "annual_volatility": opt_volatility,
-        "sharpe_ratio": sharpe_ratio,
+        "expected_annual_return": round(opt_return, 6),
+        "annual_volatility": round(opt_volatility, 6),
+        "sharpe_ratio": round(sharpe_ratio, 6),
         "total_assets_considered": len(assets),
         "assets_with_allocation": len(non_zero_weights)
     }

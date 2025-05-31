@@ -89,7 +89,14 @@ GRANULARITY_HOURLY = "1h"
 # Mapping for Portfolio API v2 granularity parameter
 GRANULARITY_MAP_PORTFOLIO_V2 = {
     "1d": "day",
-    "1h": "hour"
+    "1h": "hour",
+    "day": "day",
+    "hour": "hour",
+    "hour4": "hour4",
+    "min15": "min15",
+    "min5": "min5",
+    "week": "week",
+    "month": "month"
 }
 
 class OneInchAPIError(Exception):
@@ -104,9 +111,6 @@ class OneInchAPIError(Exception):
         return f"{super().__str__()} (Status: {self.status_code}, URL: {self.url_requested}, Response: {self.response_text[:500] if self.response_text else 'N/A'})"
 
 # --- Global httpx.AsyncClient instance for connection pooling ---
-# It's better to manage the client's lifecycle, e.g., at application startup/shutdown,
-# but for this service module, we can define it here.
-# Consider passing a client instance if this service is instantiated.
 _async_http_client: Optional[httpx.AsyncClient] = None
 
 async def get_http_client() -> httpx.AsyncClient:
@@ -180,25 +184,77 @@ async def _make_1inch_api_request(url: str, params: dict = None, api_description
             url_requested=url_snippet
         ) from e
 
-async def get_ohlcv_data(token0_address: str, token1_address: str, interval_seconds: int, chain_id: int):
+async def get_ohlcv_data(
+    base_token_address: str,
+    quote_token_address: str,
+    timeframe_granularity: str, # e.g., "day", "hour", "min5"
+    chain_id: int,
+    limit: int = 1000 # Default to fetching max candles
+):
     """
-    Fetches OHLCV (candlestick) data from the 1inch Charts API asynchronously.
+    Fetches OHLCV data from the 1inch Portfolio API v2 asynchronously.
+    This function uses the same endpoint and parameter structure as get_cross_prices_data.
 
     Args:
-        token0_address: The address of the first token in the pair.
-        token1_address: The address of the second token in the pair.
-        interval_seconds: The time interval for candles in seconds (e.g., 86400 for daily).
-        chain_id: The chain ID (e.g., 1 for Ethereum).
+        base_token_address: The address of the base token.
+        quote_token_address: The address of the quote token.
+        timeframe_granularity: The granularity of the data ('day', 'hour').
+        chain_id: The chain ID.
+        limit: Maximum number of data points to fetch.
 
     Returns:
-        A dictionary containing the OHLCV data.
-        Example: {'data': [{'time': ..., 'open': ..., 'high': ..., 'low': ..., 'close': ...}, ...]}
+        A list of dictionaries representing OHLCV data.
 
     Raises:
         OneInchAPIError: If the API request fails or returns an error.
     """
-    url = f"{CHARTS_API_BASE_URL}/{token0_address}/{token1_address}/{interval_seconds}/{chain_id}"
-    return await _make_1inch_api_request(url, api_description=f"1inch Charts API (OHLCV {token0_address[:6]}/{token1_address[:6]} on chain {chain_id})")
+    # Map granularity to the API expected format
+    granularity_api_value = GRANULARITY_MAP_PORTFOLIO_V2.get(timeframe_granularity)
+    if not granularity_api_value:
+        logger.error(f"Invalid timeframe_granularity: '{timeframe_granularity}'. Supported keys: {list(GRANULARITY_MAP_PORTFOLIO_V2.keys())}")
+        raise ValueError(f"Invalid timeframe_granularity: '{timeframe_granularity}'. Supported keys: {list(GRANULARITY_MAP_PORTFOLIO_V2.keys())}")
+
+    # Calculate time range - get data for the last period based on granularity and limit
+    import time as time_module
+    current_timestamp = int(time_module.time())
+    
+    # Calculate period duration in seconds based on granularity
+    if granularity_api_value == "min5":
+        period_seconds = 300
+    elif granularity_api_value == "min15":
+        period_seconds = 900
+    elif granularity_api_value == "hour":
+        period_seconds = 3600
+    elif granularity_api_value == "hour4":
+        period_seconds = 14400
+    elif granularity_api_value == "day":
+        period_seconds = 86400
+    elif granularity_api_value == "week":
+        period_seconds = 604800
+    elif granularity_api_value == "month":
+        period_seconds = 2592000  # Approx 30 days
+    else:
+        period_seconds = 86400  # Default to daily
+    
+    # Calculate from_timestamp to get 'limit' number of periods
+    total_duration = period_seconds * limit
+    from_timestamp = current_timestamp - total_duration
+    
+    params = {
+        "chain_id": chain_id,
+        "token0_address": base_token_address,
+        "token1_address": quote_token_address,
+        "from_timestamp": from_timestamp,
+        "to_timestamp": current_timestamp,
+        "granularity": granularity_api_value,
+    }
+    
+    logger.info(f"Requesting Portfolio API v2 OHLCV async with params: {params}")
+    return await _make_1inch_api_request(
+        PORTFOLIO_CROSS_PRICES_API_URL, 
+        params=params, 
+        api_description=f"1inch Portfolio API v2 (OHLCV {base_token_address[:6]}/{quote_token_address[:6]} on chain {chain_id})"
+    )
 
 async def get_cross_prices_data(chain_id: int, token0_address: str, token1_address: str, from_timestamp: int, to_timestamp: int, granularity_key: str):
     """
