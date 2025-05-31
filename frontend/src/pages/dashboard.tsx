@@ -172,7 +172,7 @@ const Dashboard: NextPage = () => {
         dstChainId: destChain.chainId as unknown as SupportedChain,
         srcTokenAddress: TOKEN_ADDRESS,
         dstTokenAddress: TOKEN_ADDRESS,
-        amount: "10000000000000000", // 0.01 ETH in wei
+        amount: "10000000000000000", // 0.01 ETH in wei as string to avoid BigInt literals
         enableEstimate: true,
         walletAddress: accountAddress
       };
