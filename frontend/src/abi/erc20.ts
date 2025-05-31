@@ -29,4 +29,6 @@ const erc20Abi = [
       "outputs": [{ "name": "", "type": "uint8" }],
       "type": "function"
     }
-  ] as const;
+  ];
+
+  export default erc20Abi;

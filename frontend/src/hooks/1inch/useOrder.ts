@@ -2,10 +2,12 @@ import {
     HashLock,  
     SupportedChain,  
     OrderParams,
-    PresetEnum,  
+    PresetEnum,
+    OrderStatus,  
 } from '@1inch/cross-chain-sdk';
 import sdk from "@/providers/fusion-sdk";
 import { getRandomBytes32 } from "@/utils/get-random-bytes";
+import { sleep } from "@/utils/sleep";
 
 export const TOKEN_ADDRESS = "0x4200000000000000000000000000000000000006"; //wETH on base
 export const SPENDER = "0x111111125421ca6dc452d289314280a0f8842a65";
@@ -64,7 +66,38 @@ export async function getQuoteAndExecuteOrder(params: quoteParams) {
           quoteId,
           secretHashes
         );
-        return { success: true, orderInfo, hash, quoteId, order };
+
+        // return { success: true, orderInfo, hash, quoteId, order };
+        
+        while (true) {  
+            const secretsToShare = await sdk.getReadyToAcceptSecretFills(hash)  
+      
+            if (secretsToShare.fills.length) {  
+                for (const {idx} of secretsToShare.fills) {  
+                    await sdk.submitSecret(hash, secrets[idx])  
+      
+                    console.log({idx}, 'shared secret')  
+                }  
+            }  
+      
+            // check if order finished  
+            const {status} = await sdk.getOrderStatus(hash)  
+      
+            if (  
+                status === OrderStatus.Executed ||  
+                status === OrderStatus.Expired ||  
+                status === OrderStatus.Refunded  
+            ) {  
+                break  
+            }  
+      
+            await sleep(1000)  
+        }  
+      
+        const statusResponse = await sdk.getOrderStatus(hash)  
+      
+        console.log(statusResponse)  
+        
       } catch (submitError: any) {
         if (submitError.response?.data) {
           console.error("Response data:", submitError.response.data);
