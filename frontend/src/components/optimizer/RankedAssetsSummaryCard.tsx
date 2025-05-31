@@ -1,9 +1,10 @@
 "use client";
 
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from "@/components/ui/progress";
-import { ListTree, TrendingUp, TrendingDown, Minus, ExternalLink } from 'lucide-react';
+import { Button } from "@/components/ui/button";
+import { ListTree, TrendingUp, TrendingDown, Minus, ExternalLink, Filter } from 'lucide-react';
 import { RankedAssetSummary } from '@/types/portfolio-api';
 
 interface RankedAssetsSummaryCardProps {
@@ -28,8 +29,41 @@ const getSignalIcon = (score: number) => {
   return <Minus className="h-5 w-5 text-yellow-400" />;
 }
 
+type FilterType = 'all' | 'most_bullish' | 'most_bearish';
+
 export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = ({ assets, chainName, onAssetSelect }) => {
-  const topAssets = assets.slice(0, 10); // Display top 10 or fewer
+  const [filter, setFilter] = useState<FilterType>('all');
+
+  const filteredAndSortedAssets = useMemo(() => {
+    let filtered = [...assets];
+    
+    switch (filter) {
+      case 'most_bullish':
+        // Sort by highest number of bullish signals, then by score
+        filtered.sort((a, b) => {
+          if (b.num_bullish !== a.num_bullish) {
+            return b.num_bullish - a.num_bullish;
+          }
+          return b.score - a.score;
+        });
+        break;
+      case 'most_bearish':
+        // Sort by highest number of bearish signals, then by lowest score
+        filtered.sort((a, b) => {
+          if (b.num_bearish !== a.num_bearish) {
+            return b.num_bearish - a.num_bearish;
+          }
+          return a.score - b.score;
+        });
+        break;
+      case 'all':
+      default:
+        // Keep original order (presumably sorted by score already)
+        break;
+    }
+    
+    return filtered.slice(0, 10); // Display top 10 or fewer
+  }, [assets, filter]);
 
   return (
     <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-200 bg-slate-800/70 border-slate-700 text-gray-300 backdrop-blur-sm">
@@ -38,10 +72,43 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
           <ListTree className="h-6 w-6 text-emerald-400" />
           Ranked Assets Summary <span className="text-base font-normal text-slate-400">({chainName})</span>
         </CardTitle>
-        <CardDescription className="text-slate-400">Top assets based on the scoring model. Scores range from -1 (strong bearish) to +1 (strong bullish).</CardDescription>
+        <CardDescription className="text-slate-400">
+          Top assets based on the scoring model. Scores range from -1 (strong bearish) to +1 (strong bullish).
+        </CardDescription>
+        
+        {/* Filter Buttons */}
+        <div className="flex gap-2 mt-4">
+          <Button
+            variant={filter === 'all' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setFilter('all')}
+            className="text-xs"
+          >
+            <Filter className="h-3 w-3 mr-1" />
+            All Assets
+          </Button>
+          <Button
+            variant={filter === 'most_bullish' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setFilter('most_bullish')}
+            className="text-xs"
+          >
+            <TrendingUp className="h-3 w-3 mr-1" />
+            Most Bullish
+          </Button>
+          <Button
+            variant={filter === 'most_bearish' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setFilter('most_bearish')}
+            className="text-xs"
+          >
+            <TrendingDown className="h-3 w-3 mr-1" />
+            Most Bearish
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
-        {topAssets.length === 0 ? (
+        {filteredAndSortedAssets.length === 0 ? (
             <p className="text-slate-500 italic py-4">No ranked assets to display for this selection.</p>
         ) : (
           <div className="overflow-x-auto -mx-2">
@@ -55,7 +122,7 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {topAssets.map((asset) => (
+                {filteredAndSortedAssets.map((asset: RankedAssetSummary) => (
                   <tr 
                     key={asset.asset} 
                     className="transition-all duration-150 ease-in-out hover:bg-slate-700/70 cursor-pointer group"

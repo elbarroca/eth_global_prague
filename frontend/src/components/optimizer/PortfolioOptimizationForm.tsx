@@ -112,7 +112,7 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
               )}
             />
 
-            <div className="grid md:grid-cols-2 gap-8">
+            <div className="grid md:grid-cols-3 gap-8">
               <FormField
                 control={control}
                 name="mvoObjective"
@@ -173,9 +173,6 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                   </FormItem>
                 )}
               />
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-8">
               <FormField
                 control={control}
                 name="maxTokensPerChain"
@@ -188,7 +185,7 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                     <FormControl>
                       <Input
                         type="number"
-                        placeholder="260 (recommended)"
+                        placeholder="50"
                         {...field}
                         onChange={e => {
                             const val = parseInt(e.target.value, 10);
@@ -201,36 +198,6 @@ export const PortfolioOptimizationForm: React.FC<PortfolioOptimizationFormProps>
                       Maximum assets to analyze per blockchain (10-500).
                       <br />
                       <span className="text-xs text-amber-400/80 font-medium">⚡ Higher values increase processing time</span>
-                    </FormDescription>
-                    <FormMessage className="text-red-400" />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={control}
-                name="targetReturn"
-                render={({ field }) => (
-                  <FormItem className="space-y-3">
-                    <FormLabel className="text-lg font-semibold text-white flex items-center gap-2">
-                      <span className="w-2 h-2 bg-white rounded-full"></span>
-                      Target Return
-                      <span className="text-xs bg-slate-600/50 px-2 py-1 rounded-full text-slate-300 font-normal">Optional</span>
-                    </FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        placeholder="e.g., 15 for 15% annual return"
-                        value={field.value !== undefined ? field.value * 100 : ''}
-                        onChange={e => {
-                            const val = parseFloat(e.target.value);
-                            field.onChange(isNaN(val) ? undefined : val / 100);
-                        }}
-                        step="0.1"
-                        className="bg-slate-700/30 border-slate-600/50 placeholder:text-slate-400 focus:border-white/50 focus:ring-white/50 text-white h-12 rounded-xl backdrop-blur-sm transition-all duration-300"
-                      />
-                    </FormControl>
-                    <FormDescription className="text-slate-300 text-sm">
-                      Desired annual return percentage for target-based strategies.
                     </FormDescription>
                     <FormMessage className="text-red-400" />
                   </FormItem>

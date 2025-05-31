@@ -1253,12 +1253,15 @@ async def get_optimized_portfolio_for_chain(
 
     # 0. Check portfolio cache first
     try:
+        # Calculate annualization_factor for cache lookup
+        temp_annualization_factor = annualization_factor_override if annualization_factor_override is not None else 365
+        
         cached_portfolio = await get_portfolio_from_cache(
             chain_id=chain_id,
             timeframe=timeframe,
             mvo_objective=mvo_objective,
             risk_free_rate=risk_free_rate,
-            annualization_factor=annualization_factor if annualization_factor_override is not None else (365 if timeframe.lower() == "daily" else 365 * 24)
+            annualization_factor=temp_annualization_factor
         )
         
         if cached_portfolio:

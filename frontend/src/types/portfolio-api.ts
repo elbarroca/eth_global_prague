@@ -1,14 +1,12 @@
-import EthereumIcon from '@/components/icons/EthereumIcon';
-import React from 'react';
 
 export interface RankedAssetSummary {
   asset: string;
   score: number;
   num_bullish: number;
   num_bearish: number;
-  chain_id: number;
-  base_token_address: string;
-  quote_token_address: string;
+  chain_id?: number;
+  base_token_address?: string;
+  quote_token_address?: string;
 }
 
 export interface OptimizedPortfolioDetails {
@@ -67,17 +65,8 @@ export interface ChainDataGatheringSummaryDetail {
 export interface OverallRequestSummary {
   requested_chain_ids: number[];
   timeframe: string;
-  max_tokens_per_chain_screening: number;
-  mvo_objective: string;
-  risk_free_rate: number;
-  annualization_factor_used: number;
-  total_unique_assets_after_screening: number;
-  assets_considered_for_global_mvo: number;
-  assets_in_final_portfolio: number;
   total_processing_time_seconds: number;
-  chain_data_gathering_summary: {
-    [key: string]: ChainDataGatheringSummaryDetail;
-  };
+  chain_data_gathering_summary: any;
 }
 
 export interface PortfolioApiResponse {
@@ -136,4 +125,43 @@ export const timeframeOptions = [
   { id: 'week', name: '1 Week' },
   { id: 'month', name: '1 Month' },
 
-]; 
+];
+
+// New types for the combined asset data endpoint
+export interface AssetOhlcvData {
+  ohlcv_candles: Array<{
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume?: number;
+  }>;
+  last_updated: string | null;
+  chain_id: number;
+  base_token_address: string;
+  quote_token_address: string;
+  timeframe: string;
+  period_seconds: number;
+  base_token_symbol: string;
+  quote_token_symbol: string;
+  chain_name: string;
+}
+
+export interface AssetForecastSignal {
+  signal_type: string;
+  confidence: number;
+  details: { [key: string]: any };
+  forecast_timestamp: number;
+  ohlcv_data_timestamp: number;
+  asset_symbol: string;
+  chain_id: number;
+  base_token_address: string;
+}
+
+export interface AssetDataApiResponse {
+  ohlcv_data: AssetOhlcvData | null;
+  forecast_signals: AssetForecastSignal[];
+  error: string | null;
+  data_sources: { [key: string]: string };
+} 
