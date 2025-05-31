@@ -13,6 +13,7 @@ import { formatEther } from 'viem';
 interface LiquidatePortfolioButtonProps {
   portfolioWeights: { [key: string]: number };
   selectedChains: string[];
+  portfolioTotalValueUSD?: number; // Optional prop for total portfolio value
 }
 
 interface BridgeAllocation {
@@ -21,11 +22,13 @@ interface BridgeAllocation {
   chainIcon: string;
   percentage: number;
   estimatedValue: string;
+  assets: string[]; // Assets allocated to this chain
 }
 
 export const LiquidatePortfolioButton: React.FC<LiquidatePortfolioButtonProps> = ({
   portfolioWeights,
   selectedChains,
+  portfolioTotalValueUSD,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isLiquidating, setIsLiquidating] = useState(false);
@@ -34,192 +37,249 @@ export const LiquidatePortfolioButton: React.FC<LiquidatePortfolioButtonProps> =
     address: address,
   });
   
-  // Mock portfolio value - in real implementation, this would come from actual portfolio data
   const [totalPortfolioValue, setTotalPortfolioValue] = useState<number>(0);
 
   useEffect(() => {
-    // Calculate total portfolio value based on weights and mock values
-    // In real implementation, this would fetch actual token balances and prices
-    const mockValue = balance ? parseFloat(formatEther(balance.value)) * 10 : 1000; // Mock multiplier
-    setTotalPortfolioValue(mockValue);
-  }, [balance]);
+    // Use provided portfolioTotalValueUSD if available, otherwise calculate from wallet balance
+    if (portfolioTotalValueUSD !== undefined) {
+      setTotalPortfolioValue(portfolioTotalValueUSD);
+    } else {
+      const mockValue = balance ? parseFloat(formatEther(balance.value)) * 10 : 1000; 
+      setTotalPortfolioValue(mockValue);
+    }
+  }, [balance, portfolioTotalValueUSD]);
 
-  // Calculate bridge allocations based on portfolio weights and selected chains
+  // Calculate chain allocations based on actual portfolio assets
   const calculateBridgeAllocations = (): BridgeAllocation[] => {
-    const totalAssets = Object.keys(portfolioWeights).length;
-    const chainsWithAssets = selectedChains.filter(chainId => 
-      chainOptions.find(chain => chain.id === chainId)
-    );
-
-    if (chainsWithAssets.length === 0) return [];
-
-    // Distribute assets evenly across selected chains for simplification
-    // In a real implementation, this would be based on actual asset distribution
-    const basePercentage = 100 / chainsWithAssets.length;
+    const chainAllocations: { [chainId: string]: { percentage: number; assets: string[] } } = {};
     
-    return chainsWithAssets.map((chainId, index) => {
-      const chainOption = chainOptions.find(chain => chain.id === chainId);
-      if (!chainOption) return null;
-
-      // Add some variation to make it more realistic
-      const variation = (Math.random() - 0.5) * 20; // ±10% variation
-      let percentage = basePercentage + variation;
+    // Parse portfolio weights to determine chain allocations
+    Object.entries(portfolioWeights).forEach(([assetTicker, weight]) => {
+      // Extract chain information from asset ticker (e.g., "ETH-USDC_on_Ethereum")
+      const parts = assetTicker.split('_on_');
+      let chainName = parts[1] || 'Unknown';
       
-      // Ensure percentages are positive and sum to 100%
-      if (index === chainsWithAssets.length - 1) {
-        // Last chain gets the remainder to ensure total is 100%
-        const usedPercentage = chainsWithAssets.slice(0, -1).reduce((sum, _, i) => {
-          const prevVariation = (Math.random() - 0.5) * 20;
-          return sum + Math.max(5, basePercentage + prevVariation);
-        }, 0);
-        percentage = Math.max(5, 100 - usedPercentage);
-      } else {
-        percentage = Math.max(5, percentage);
+      // Map chain names to chain IDs
+      let chainId = '1'; // Default to Ethereum
+      if (chainName.toLowerCase().includes('polygon')) chainId = '137';
+      else if (chainName.toLowerCase().includes('base')) chainId = '8453';
+      else if (chainName.toLowerCase().includes('arbitrum')) chainId = '42161';
+      else if (chainName.toLowerCase().includes('optimism')) chainId = '10';
+      else if (chainName.toLowerCase().includes('avalanche')) chainId = '43114';
+      else if (chainName.toLowerCase().includes('bsc') || chainName.toLowerCase().includes('binance')) chainId = '56';
+      
+      // Only include if chain is in selectedChains
+      if (selectedChains.includes(chainId)) {
+        if (!chainAllocations[chainId]) {
+          chainAllocations[chainId] = { percentage: 0, assets: [] };
+        }
+        chainAllocations[chainId].percentage += weight * 100;
+        chainAllocations[chainId].assets.push(parts[0] || assetTicker);
       }
+    });
 
-      const estimatedValue = (totalPortfolioValue * percentage / 100).toFixed(2);
+    // Convert to BridgeAllocation format
+    const allocations: BridgeAllocation[] = Object.entries(chainAllocations).map(([chainId, data]) => {
+      const chainOpt = chainOptions.find(opt => opt.id === chainId);
+      const estimatedValue = (totalPortfolioValue * data.percentage / 100).toFixed(2);
       
       return {
         chainId,
-        chainName: chainOption.name,
-        chainIcon: chainOption.icon,
-        percentage: Math.round(percentage * 100) / 100,
+        chainName: chainOpt?.name || 'Unknown Chain',
+        chainIcon: chainOpt?.icon || '🔗',
+        percentage: data.percentage,
         estimatedValue: `$${estimatedValue}`,
+        assets: Array.from(new Set(data.assets)), // Remove duplicates
       };
-    }).filter(Boolean) as BridgeAllocation[];
+    });
+
+    // Sort by percentage (highest first)
+    return allocations.sort((a, b) => b.percentage - a.percentage);
   };
 
   const bridgeAllocations = calculateBridgeAllocations();
-  const totalValue = Object.values(portfolioWeights).reduce((sum, weight) => sum + weight, 0);
+  
+  // Check if portfolio contains WETH or ETH
+  const hasWETH = Object.keys(portfolioWeights).some(asset => 
+    asset.toLowerCase().includes('weth') || asset.toLowerCase().includes('eth')
+  );
+  
+  // Check if user has meaningful wallet balance
+  const hasWalletBalance = balance && parseFloat(formatEther(balance.value)) > 0.001;
 
   const handleLiquidate = async () => {
     setIsLiquidating(true);
-    
     try {
-      // Simulate liquidation process
-      console.log('Liquidating portfolio with bridge allocations:', bridgeAllocations);
-      console.log('Total portfolio value:', totalPortfolioValue);
-      console.log('Connected wallet:', address);
+      console.log('Initiating portfolio liquidation with settings:', {
+        bridgeAllocations,
+        totalPortfolioValue,
+        connectedWallet: address,
+      });
       
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 2500)); 
       
-      alert(`Portfolio liquidation initiated! 
-      Total Value: $${totalPortfolioValue.toFixed(2)}
-      Bridge Allocations: ${bridgeAllocations.length} chains
-      (This is a demo)`);
-      
-      setIsOpen(false); // Close the collapsible after successful liquidation
+      alert(`Portfolio Liquidation Process Simulated!\nTotal Value: $${totalPortfolioValue.toFixed(2)}\n${bridgeAllocations.length} chains targeted for bridging.\n(This is a UI demonstration)`);
+      setIsOpen(false);
     } catch (error) {
-      console.error('Liquidation failed:', error);
-      alert('Liquidation failed. Please try again.');
+      console.error('Liquidation simulation failed:', error);
+      alert('Liquidation simulation failed. See console for details.');
     } finally {
       setIsLiquidating(false);
     }
   };
 
   return (
-    <div className="mt-6">
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <div className="mt-8 w-full max-w-2xl mx-auto">
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} className="rounded-xl overflow-hidden shadow-xl border border-slate-700/80 bg-gradient-to-br from-slate-800 via-slate-850 to-slate-900">
         <CollapsibleTrigger asChild>
           <Button 
-            className="w-full bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold text-lg py-4 px-8 rounded-xl shadow-lg hover:shadow-xl transition-all duration-500 transform hover:scale-105 group relative overflow-hidden animate-pulse hover:animate-none"
+            variant="outline"
+            className={`w-full text-white font-semibold text-base py-3.5 px-6 rounded-t-xl ${isOpen ? 'rounded-b-none' : 'rounded-b-xl'} shadow-lg hover:shadow-xl transition-all duration-300 group relative overflow-hidden border-0 bg-gradient-to-r from-red-500 via-pink-500 to-rose-500 hover:from-red-600 hover:via-pink-600 hover:to-rose-600 focus:ring-4 focus:ring-pink-500/50 focus:outline-none`}
           >
-            <div className="absolute inset-0 bg-gradient-to-r from-emerald-400/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-            <span className="relative z-10 flex items-center justify-center gap-3">
-              <ArrowRightLeft className={`h-6 w-6 transition-transform duration-300 ${isOpen ? 'rotate-12' : ''}`} />
-              <span className="transition-all duration-300">Liquidate Portfolio</span>
+            <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+            <span className="relative z-10 flex items-center justify-center gap-2.5">
+              <ArrowRightLeft className={`h-5 w-5 transition-transform duration-300 group-hover:scale-110 ${isOpen ? 'rotate-90' : ''}`} />
+              <span>Liquidate & Bridge Portfolio</span>
               <ChevronDown className={`h-5 w-5 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
             </span>
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent 
-          className="mt-4"
+          className="border-t border-slate-700/80 bg-slate-800/70 backdrop-blur-sm"
         >
-          <Card className="bg-slate-800/95 border-slate-600/50 backdrop-blur-sm shadow-lg">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
-                <ArrowRightLeft className="h-5 w-5 text-emerald-400" />
-                Bridge Asset Distribution
+          <Card className="bg-transparent border-0 shadow-none rounded-none">
+            <CardHeader className="pb-4 pt-5 px-6">
+              <CardTitle className="text-lg font-semibold text-slate-100 flex items-center gap-2.5">
+                <span className="w-2 h-4 bg-pink-500 rounded-sm block"></span>
+                Confirm Liquidation & Bridge Plan
               </CardTitle>
-              <CardDescription className="text-slate-300 text-sm">
-                Assets will be bridged to the following chains based on optimal distribution:
-                {isConnected && (
-                  <div className="mt-2 p-2 bg-slate-700/50 rounded-md flex items-center gap-2">
-                    <Wallet className="h-4 w-4 text-emerald-400" />
-                    <span className="text-xs">
+              <CardDescription className="text-slate-400 text-sm mt-1 ml-[18px] space-y-3">
+                <div>Assets will be liquidated and resulting value bridged based on your portfolio allocation:</div>
+                
+                {/* Wallet Balance - Only show if user has balance */}
+                {isConnected && hasWalletBalance && (
+                  <div className="p-2.5 bg-slate-700/60 rounded-md flex items-center gap-2.5 border border-slate-600/70 shadow-sm">
+                    <Wallet className="h-4 w-4 text-pink-400 flex-shrink-0" />
+                    <div className="text-xs leading-tight">
                       {balanceLoading ? (
-                        "Loading wallet balance..."
-                      ) : balance ? (
-                        `Wallet Balance: ${parseFloat(formatEther(balance.value)).toFixed(4)} ${balance.symbol} | Portfolio Value: $${totalPortfolioValue.toFixed(2)}`
+                        <span className="text-slate-400 italic">Loading wallet balance...</span>
                       ) : (
-                        `Portfolio Value: $${totalPortfolioValue.toFixed(2)}`
+                        <>
+                          <span className="block text-slate-300">Wallet Balance: <span className="font-semibold text-pink-300">{parseFloat(formatEther(balance.value)).toFixed(4)} {balance.symbol}</span></span>
+                          <span className="block text-slate-300">Portfolio Value: <span className="font-semibold text-pink-300">${totalPortfolioValue.toFixed(2)}</span></span>
+                        </>
                       )}
-                    </span>
+                    </div>
+                  </div>
+                )}
+                
+                {/* WETH Warning */}
+                {hasWETH && (
+                  <div className="p-2.5 bg-amber-600/20 rounded-md border border-amber-500/50 flex items-start gap-2.5">
+                    <span className="text-amber-400 text-sm">⚠️</span>
+                    <div className="text-xs text-amber-300 leading-tight">
+                      <span className="font-semibold block">WETH/ETH Detected</span>
+                      <span className="text-amber-400">Ensure you have enough ETH for gas fees on all target chains before proceeding.</span>
+                    </div>
                   </div>
                 )}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="px-6 pb-6 space-y-5">
               {bridgeAllocations.length === 0 ? (
-                <p className="text-slate-500 italic text-center py-4">
-                  No chains selected for bridging
+                <p className="text-slate-500 italic text-center py-6 bg-slate-700/30 rounded-md border border-slate-600/50">
+                  No chains selected or no assets to bridge.
                 </p>
               ) : (
                 <>
-                  {bridgeAllocations.map((allocation) => (
-                    <div key={allocation.chainId} className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <span className="text-xl">{allocation.chainIcon}</span>
-                          <div className="flex flex-col">
-                            <span className="font-medium text-slate-200">{allocation.chainName}</span>
-                            <span className="text-xs text-emerald-400 font-medium">{allocation.estimatedValue}</span>
+                  <div className="space-y-4 max-h-72 overflow-y-auto custom-scrollbar pr-2">
+                    {bridgeAllocations.map((allocation) => (
+                      <div key={allocation.chainId} className="space-y-3 bg-slate-700/40 p-4 rounded-lg border border-slate-600/60 shadow-sm hover:bg-slate-700/60 transition-colors duration-200">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-2xl opacity-90">{allocation.chainIcon}</span>
+                            <div>
+                              <span className="font-semibold text-slate-100 block text-sm">{allocation.chainName}</span>
+                              <span className="text-xs text-pink-400 font-medium">Value: {allocation.estimatedValue}</span>
+                            </div>
                           </div>
+                          <span className="text-pink-300 font-bold text-lg">
+                            {allocation.percentage.toFixed(1)}%
+                          </span>
                         </div>
-                        <span className="text-white font-semibold">
-                          {allocation.percentage.toFixed(1)}%
-                        </span>
+                        
+                        {/* Assets List */}
+                        {allocation.assets.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs text-slate-400 mb-1.5">Assets to bridge:</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {allocation.assets.slice(0, 6).map((asset, idx) => (
+                                <span 
+                                  key={idx} 
+                                  className="text-xs bg-slate-600/60 text-slate-200 px-2 py-1 rounded-md border border-slate-500/50 font-medium"
+                                >
+                                  {asset}
+                                </span>
+                              ))}
+                              {allocation.assets.length > 6 && (
+                                <span className="text-xs text-slate-400 px-2 py-1">
+                                  +{allocation.assets.length - 6} more
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
+                        <Progress 
+                          value={allocation.percentage} 
+                          className="h-3 bg-slate-600/80 rounded [&>div]:bg-gradient-to-r [&>div]:from-pink-500 [&>div]:to-rose-500 shadow-inner" 
+                        />
                       </div>
-                      <Progress 
-                        value={allocation.percentage} 
-                        className="h-2 bg-slate-700 [&>div]:bg-gradient-to-r [&>div]:from-emerald-500 [&>div]:to-emerald-600" 
-                      />
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                   
-                  <div className="pt-4 border-t border-slate-600/50">
-                    <div className="space-y-2 mb-3">
-                      <div className="flex items-center justify-between text-sm text-slate-400">
+                  <div className="pt-5 border-t border-slate-700/60">
+                    <div className="space-y-2 mb-4 text-sm">
+                      <div className="flex items-center justify-between text-slate-300">
                         <span>Total Portfolio Value:</span>
-                        <span className="font-medium text-emerald-400">${totalPortfolioValue.toFixed(2)}</span>
+                        <span className="font-bold text-pink-300 text-base">${totalPortfolioValue.toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span>Chains to Bridge:</span>
+                        <span className="font-medium text-slate-300">{bridgeAllocations.length} chain{bridgeAllocations.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span>Total Assets:</span>
+                        <span className="font-medium text-slate-300">{Object.keys(portfolioWeights).length} asset{Object.keys(portfolioWeights).length !== 1 ? 's' : ''}</span>
                       </div>
                       {isConnected && address && (
-                        <div className="flex items-center justify-between text-xs text-slate-500">
-                          <span>Connected Wallet:</span>
-                          <span className="font-mono">{address.slice(0, 6)}...{address.slice(-4)}</span>
+                        <div className="flex items-center justify-between text-xs text-slate-400 pt-1 border-t border-slate-700/50">
+                          <span>Target Wallet:</span>
+                          <span className="font-mono bg-slate-700/50 px-1.5 py-0.5 rounded text-slate-300">{address.slice(0, 6)}...{address.slice(-4)}</span>
                         </div>
                       )}
+                       {!isConnected && (
+                         <p className="text-xs text-amber-400 text-center py-2 px-3 bg-amber-600/20 rounded-md border border-amber-500/50">Please connect your wallet to proceed with liquidation.</p>
+                       )}
                     </div>
                     
                     <Button 
                       onClick={handleLiquidate}
                       disabled={isLiquidating || !isConnected}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-semibold py-2 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg disabled:transform-none disabled:shadow-none"
+                      className="w-full bg-gradient-to-r from-pink-600 via-rose-600 to-red-600 hover:from-pink-700 hover:via-rose-700 hover:to-red-700 disabled:from-slate-600 disabled:via-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg focus:ring-4 focus:ring-pink-500/60 focus:outline-none group"
                     >
                       {isLiquidating ? (
                         <>
-                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                           </svg>
-                          Processing...
+                          Liquidating & Bridging...
                         </>
                       ) : (
                         <>
-                          Confirm Liquidation
-                          <ExternalLink className="ml-2 h-4 w-4" />
+                          Execute Liquidation & Bridge ({bridgeAllocations.length} chain{bridgeAllocations.length !== 1 ? 's' : ''})
+                          <ExternalLink className="ml-2 h-4 w-4 opacity-80 group-hover:opacity-100 transition-opacity" />
                         </>
                       )}
                     </Button>

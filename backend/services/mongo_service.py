@@ -10,8 +10,12 @@ from models import OHLVCRecord, StoredOHLCVData, PortfolioWeights, StoredPortfol
 from pandas import Series as pd_Series, DataFrame as pd_DataFrame
 import pandas as pd
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 import asyncio
+
+# Load environment variables from .env file
+load_dotenv()
 
 # --- Logging Configuration ---
 logger = logging.getLogger(__name__)
@@ -23,9 +27,15 @@ if not logger.handlers:
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-# --- MongoDB Configuration ---\
+# --- MongoDB Configuration ---
 MONGO_URI = os.getenv('MONGO_URI')
 DATABASE_NAME = os.getenv('DATABASE_NAME')
+
+# Validate required environment variables
+if not MONGO_URI:
+    raise ValueError("MONGO_URI environment variable is not set. Please check your .env file.")
+if not DATABASE_NAME:
+    raise ValueError("DATABASE_NAME environment variable is not set. Please check your .env file.")
 OHLCV_COLLECTION_NAME = "ohlcv_data"
 PORTFOLIO_COLLECTION_NAME = "portfolio_cache"
 FORECAST_SIGNALS_COLLECTION_NAME = "forecast_signals"
@@ -64,7 +74,17 @@ async def connect_to_mongo():
             db = None
 
 
-    logger.info(f"Connecting to MongoDB async at {MONGO_URI.split('@')[-1]}...")
+    # Additional safety check
+    if not MONGO_URI:
+        raise ValueError("MONGO_URI is not configured. Please check your environment variables.")
+    
+    # Log connection attempt (hide credentials)
+    try:
+        connection_display = MONGO_URI.split('@')[-1] if '@' in MONGO_URI else "localhost"
+    except Exception:
+        connection_display = "configured database"
+    
+    logger.info(f"Connecting to MongoDB async at {connection_display}...")
     try:
         # Ensure any existing client is closed before creating a new one
         if mongo_client:

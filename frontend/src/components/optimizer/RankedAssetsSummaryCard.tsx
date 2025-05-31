@@ -62,18 +62,18 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
         break;
     }
     
-    return filtered.slice(0, 10); // Display top 10 or fewer
+    return filtered.slice(0, 12); // Display top 12 assets
   }, [assets, filter]);
 
   return (
-    <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-200 bg-slate-800/70 border-slate-700 text-gray-300 backdrop-blur-sm">
+    <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-200 bg-slate-800 border-slate-700 text-gray-300">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-xl font-semibold text-white">
           <ListTree className="h-6 w-6 text-emerald-400" />
           Ranked Assets Summary <span className="text-base font-normal text-slate-400">({chainName})</span>
         </CardTitle>
         <CardDescription className="text-slate-400">
-          Top assets based on the scoring model. Scores range from -1 (strong bearish) to +1 (strong bullish).
+          Top-performing assets based on our scoring model. Click any asset to view detailed analysis.
         </CardDescription>
         
         {/* Filter Buttons */}
@@ -82,7 +82,11 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
             variant={filter === 'all' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setFilter('all')}
-            className="text-xs"
+            className={`text-xs transition-all duration-200 ${
+              filter === 'all' 
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' 
+                : 'bg-slate-700/50 hover:bg-slate-600 border-slate-500 text-gray-200 hover:text-white'
+            }`}
           >
             <Filter className="h-3 w-3 mr-1" />
             All Assets
@@ -91,7 +95,11 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
             variant={filter === 'most_bullish' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setFilter('most_bullish')}
-            className="text-xs"
+            className={`text-xs transition-all duration-200 ${
+              filter === 'most_bullish' 
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' 
+                : 'bg-slate-700/50 hover:bg-slate-600 border-slate-500 text-gray-200 hover:text-white'
+            }`}
           >
             <TrendingUp className="h-3 w-3 mr-1" />
             Most Bullish
@@ -100,7 +108,11 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
             variant={filter === 'most_bearish' ? 'default' : 'outline'}
             size="sm"
             onClick={() => setFilter('most_bearish')}
-            className="text-xs"
+            className={`text-xs transition-all duration-200 ${
+              filter === 'most_bearish' 
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' 
+                : 'bg-slate-700/50 hover:bg-slate-600 border-slate-500 text-gray-200 hover:text-white'
+            }`}
           >
             <TrendingDown className="h-3 w-3 mr-1" />
             Most Bearish
@@ -109,7 +121,7 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
       </CardHeader>
       <CardContent>
         {filteredAndSortedAssets.length === 0 ? (
-            <p className="text-slate-500 italic py-4">No ranked assets to display for this selection.</p>
+            <p className="text-slate-500 italic py-8 text-center">No ranked assets to display for this selection.</p>
         ) : (
           <div className="overflow-x-auto -mx-2">
             <table className="min-w-full">
@@ -125,26 +137,26 @@ export const RankedAssetsSummaryCard: React.FC<RankedAssetsSummaryCardProps> = (
                 {filteredAndSortedAssets.map((asset: RankedAssetSummary) => (
                   <tr 
                     key={asset.asset} 
-                    className="transition-all duration-150 ease-in-out hover:bg-slate-700/70 cursor-pointer group"
+                    className="transition-all duration-200 ease-in-out hover:bg-slate-700/70 cursor-pointer group hover:shadow-md"
                     onClick={() => onAssetSelect(asset)}
                   >
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-4 py-4 whitespace-nowrap">
                       <div className="flex items-center">
-                        <span className="text-sm font-medium text-teal-400 group-hover:text-teal-300 transition-colors">{asset.asset}</span>
-                        <ExternalLink className="ml-1.5 h-3.5 w-3.5 text-slate-500 group-hover:text-teal-400 transition-colors" />
+                        <span className="text-sm font-medium text-emerald-400 group-hover:text-emerald-300 transition-colors">{asset.asset}</span>
+                        <ExternalLink className="ml-2 h-3.5 w-3.5 text-slate-500 group-hover:text-emerald-400 transition-colors" />
                       </div>
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-slate-300">
-                      <div className="flex items-center gap-2">
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-slate-300">
+                      <div className="flex items-center gap-3">
                         {getSignalIcon(asset.score)}
-                        <span className={`font-semibold text-base w-14 text-right ${asset.score > 0 ? 'text-emerald-400' : asset.score < 0 ? 'text-red-400' : 'text-yellow-400'}`}>
+                        <span className={`font-bold text-base w-16 text-right ${asset.score > 0 ? 'text-emerald-400' : asset.score < 0 ? 'text-red-400' : 'text-yellow-400'}`}>
                           {asset.score.toFixed(3)}
                         </span>
-                        <Progress value={(asset.score + 1) * 50} className={`w-24 h-2 bg-slate-600/70 rounded-full [&>div]:${getScoreColorClass(asset.score)} transition-all`}/>
+                        <Progress value={(asset.score + 1) * 50} className={`w-28 h-2.5 bg-slate-600/70 rounded-full [&>div]:${getScoreColorClass(asset.score)} transition-all`}/>
                       </div>
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-emerald-400 text-center font-medium">{asset.num_bullish}</td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-red-400 text-center font-medium">{asset.num_bearish}</td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-emerald-400 text-center font-bold">{asset.num_bullish}</td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-red-400 text-center font-bold">{asset.num_bearish}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,9 +1,13 @@
 # app/main.py
 from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict, Any, Tuple
 import logging
 import time
 import asyncio
+import json
+import queue
+import threading
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -30,6 +34,31 @@ from forecast.mvo_portfolio import calculate_mvo_inputs, optimize_portfolio_mvo
 import numpy as np
 from contextlib import asynccontextmanager
 
+# Global log queue for streaming
+log_queue = queue.Queue()
+
+class LogStreamHandler(logging.Handler):
+    """Custom log handler that puts log records into a queue for streaming"""
+    
+    def emit(self, record):
+        try:
+            log_entry = {
+                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": self.format(record)
+            }
+            # Only keep last 1000 log entries to prevent memory issues
+            if log_queue.qsize() > 1000:
+                try:
+                    log_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            log_queue.put(log_entry)
+        except Exception:
+            # Avoid infinite recursion if logging the error fails
+            pass
+
 # Utility function to convert numpy types to Python native types
 def convert_numpy_types(obj):
     """
@@ -55,12 +84,34 @@ def convert_numpy_types(obj):
 # Configure logging for the main application
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-if not logger.handlers:
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+
+# Configure root logger first to ensure all loggers inherit the stream handler
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Add console handler to root logger if not already present
+if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers if not isinstance(h, LogStreamHandler)):
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    root_logger.addHandler(console_handler)
+
+# Add the streaming handler to root logger to catch all logs
+if not any(isinstance(h, LogStreamHandler) for h in root_logger.handlers):
+    root_stream_handler = LogStreamHandler()
+    root_stream_handler.setLevel(logging.INFO)
+    root_stream_formatter = logging.Formatter('%(message)s')
+    root_stream_handler.setFormatter(root_stream_formatter)
+    root_logger.addHandler(root_stream_handler)
+    
+    # Ensure all existing loggers also get the stream handler
+    for name in logging.Logger.manager.loggerDict:
+        existing_logger = logging.getLogger(name)
+        if existing_logger.level == logging.NOTSET:
+            existing_logger.setLevel(logging.INFO)
+        # Enable propagation to ensure logs reach the root logger
+        existing_logger.propagate = True
 
 app = FastAPI(
     title="1inch Token Screener API",
@@ -98,6 +149,51 @@ async def shutdown_app_clients():
     
     await one_inch_data_service.close_http_client()
     logger.info("Global HTTPX client closed.")
+
+# Log streaming endpoint
+@app.get("/logs/stream")
+async def stream_logs():
+    """
+    Server-Sent Events endpoint for streaming logs to the frontend
+    """
+    async def log_generator():
+        last_heartbeat = time.time()
+        heartbeat_interval = 5  # Send heartbeat every 5 seconds
+        
+        while True:
+            try:
+                # Get log entry from queue (non-blocking)
+                log_entry = log_queue.get_nowait()
+                yield f"data: {json.dumps(log_entry)}\n\n"
+                last_heartbeat = time.time()  # Reset heartbeat timer when we send actual logs
+            except queue.Empty:
+                # No logs available, check if we need to send heartbeat
+                current_time = time.time()
+                if current_time - last_heartbeat >= heartbeat_interval:
+                    heartbeat = {
+                        "type": "heartbeat",
+                        "timestamp": datetime.now().isoformat(),
+                        "message": "Log stream connection active"
+                    }
+                    yield f"data: {json.dumps(heartbeat)}\n\n"
+                    last_heartbeat = current_time
+                
+                # Wait a short time before checking again
+                await asyncio.sleep(0.1)  # 100ms delay
+            except Exception as e:
+                logger.error(f"Error in log stream: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'timestamp': datetime.now().isoformat()})}\n\n"
+                break
+
+    return StreamingResponse(
+        log_generator(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )
 
 # Constants for the screener endpoint
 API_CALL_DELAY_SECONDS = 0.2 # Delay between 1inch API calls to avoid rate limiting
@@ -681,6 +777,14 @@ async def get_order_status(order_hash: str):
 async def root():
     return {"message": "Welcome to the 1inch API. Use /docs for API documentation."}
 
+@app.get("/test-logs")
+async def test_logs():
+    """Test endpoint to verify log streaming is working"""
+    logger.info("🧪 Test log message from /test-logs endpoint")
+    logger.warning("⚠️ Test warning message")
+    logger.error("❌ Test error message")
+    return {"message": "Test logs sent to stream"}
+
 async def process_single_chain_data_gathering(
     chain_id_to_process: int,
     timeframe_to_use: str, # This will be the 1inch API format, e.g., "15min", "day"
@@ -808,6 +912,10 @@ async def get_optimized_portfolios_for_chains(
     target_return: Optional[float] = Query(None, description="Target annualized return (e.g., 0.8 for 80%) for 'minimize_volatility'.")
 ):
     main_request_start_time = time.time()
+    
+    # Add a test log to verify log streaming is working
+    logger.info("🚀 Portfolio optimization request received - starting cross-chain analysis")
+    
     try:
         chain_ids_input_list = [int(c.strip()) for c in chain_ids_str.split(',') if c.strip()]
         if not chain_ids_input_list: raise ValueError("No chain IDs provided.")
