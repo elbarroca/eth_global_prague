@@ -4,7 +4,6 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { usePortfolioStore } from '@/stores/portfolio-store';
 import { ArrowLeft, Briefcase, Settings, BarChart, Database, Activity } from 'lucide-react';
 import { useAccount } from 'wagmi';
 import React, { useState, useEffect } from 'react';
@@ -18,12 +17,13 @@ import { RankedAssetsSummaryCard } from '@/components/optimizer/RankedAssetsSumm
 import { OptimizedPortfolioDetailsCard } from '@/components/optimizer/OptimizedPortfolioDetailsCard';
 import { MVOInputsSummaryCard } from '@/components/optimizer/MVOInputsSummaryCard';
 import { AssetDeepDiveCard } from '@/components/optimizer/AssetDeepDiveCard';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import EfficientFrontierPlot from '@/components/optimizer/EfficientFrontierPlot';
 
 import {
   PortfolioApiResponse,
   PortfolioFormInputs,
   RankedAssetSummary,
+  OptimizedPortfolioDetails,
 } from '@/types/portfolio-api';
 
 // Define Zod schema for form validation (can be co-located or imported)
@@ -32,7 +32,8 @@ const portfolioFormSchema = z.object({
   mvoObjective: z.string().min(1, "Please select an MVO objective."),
   timeframe: z.string().min(1, "Please select a timeframe."),
   targetReturn: z.coerce.number().optional(),
-  riskFreeRate: z.coerce.number().default(0.02),
+  maxTokensPerChain: z.coerce.number().min(10).max(100).optional(),
+  riskFreeRate: z.coerce.number().min(0).max(1).optional(),
 });
 
 const Dashboard: NextPage = () => {
@@ -45,100 +46,76 @@ const Dashboard: NextPage = () => {
   const [apiError, setApiError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [selectedAssetForDeepDive, setSelectedAssetForDeepDive] = useState<RankedAssetSummary | null>(null);
+  const [displayedMVOObjective, setDisplayedMVOObjective] = useState<string>("primary");
 
-  const formMethods = useForm<PortfolioFormInputs>({
+  const formMethods = useForm<PortfolioFormInputs, any, PortfolioFormInputs>({
     resolver: zodResolver(portfolioFormSchema),
     defaultValues: {
       chains: ['1'], // Default to Ethereum for example
       mvoObjective: 'maximize_sharpe',
-      timeframe: '1d',
-      riskFreeRate: 0.02,
+      timeframe: 'day',
       targetReturn: undefined,
+      maxTokensPerChain: 50,
+      riskFreeRate: 0.02,
     },
   });
 
   const onSubmit = async (data: PortfolioFormInputs) => {
     setIsLoading(true);
     setApiError(null);
-    setShowResults(false); // Hide previous results before fetching new ones
-    // setPortfolioData(null); // Clear old data - optional, if showResults handles visibility
-    console.log("Form Data Submitted:", data);
+    setShowResults(false);
+    setSelectedAssetForDeepDive(null);
+    console.log("Form Data Submitted for API call:", data);
 
-    // Simulate API call
-    setTimeout(() => {
-      const mockApiResponse: PortfolioApiResponse = {
-        results_by_chain: {
-          global_cross_chain: {
-            chain_id: 0,
-            chain_name: "Global Cross-Chain Portfolio",
-            status: "success",
-            data: {
-              ranked_assets_summary: [
-                { asset: "TRB-USDC_on_Ethereum", score: 0.77, num_bullish: 5, num_bearish: 3 },
-                { asset: "XAUt-USDC_on_Ethereum", score: 0.52, num_bullish: 2, num_bearish: 1 },
-                { asset: "MIM-USDC_on_Arbitrum", score: 0.49, num_bullish: 2, num_bearish: 1 },
-                { asset: "ELF-USDC_on_Ethereum", score: 0.02, num_bullish: 5, num_bearish: 3 },
-                { asset: "stataArbUSDCn-USDC_on_Arbitrum", score: -0.01, num_bullish: 3, num_bearish: 3 },
-              ],
-              optimized_portfolio_details: {
-                weights: { 
-                  "MIM-USDC_on_Arbitrum": 0.025670804659467774,
-                  "aEthWETH-USDC_on_Ethereum": 0.005775904935772167,
-                  "XAI-USDC_on_Ethereum": 0.014411332428068292,
-                  "ANIME-USDC_on_Arbitrum": 0.34664275084038354,
-                  "WINR-USDC_on_Arbitrum": 0.014145229590328818,
-                },
-                expected_annual_return: 45.497674,
-                annual_volatility: 0.86965,
-                sharpe_ratio: 52.294213,
-                total_assets_considered: 273,
-                assets_with_allocation: 30,
-              },
-              mvo_inputs_summary: {
-                expected_returns_top_n: { 
-                  "ANIME-USDC_on_Arbitrum": 112.9492930041536,
-                  "GS-USDC_on_Arbitrum": 87.66653399290526,
-                  "HOL-USDC_on_Arbitrum": 81.55737783892815, 
-                },
-                covariance_matrix_shape: "(273, 273)",
-                valid_symbols_count_for_mvo: 273,
-              },
-            },
-            error_message: null,
-            request_params_for_chain: {
-              chain_ids_requested: data.chains.map(id => parseInt(id, 10)),
-              timeframe: data.timeframe,
-              mvo_objective: data.mvoObjective,
-              risk_free_rate: data.riskFreeRate || 0.02,
-              annualization_factor_used: 365,
-              max_tokens_per_chain_screening: 260,
-              target_return: data.targetReturn || null,
-            },
-          },
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    
+    const queryParams = new URLSearchParams({
+      chain_ids: data.chains.join(','),
+      timeframe: data.timeframe,
+      mvo_objective: data.mvoObjective,
+    });
+
+    if (data.maxTokensPerChain !== undefined) {
+      queryParams.append('max_tokens_per_chain', String(data.maxTokensPerChain));
+    }
+    if (data.riskFreeRate !== undefined) {
+      queryParams.append('risk_free_rate', String(data.riskFreeRate));
+    }
+    if (data.targetReturn !== undefined) {
+      queryParams.append('target_return', String(data.targetReturn));
+    }
+
+    console.log("Making API call with params:", queryParams.toString());
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/portfolio/optimize_cross_chain/?${queryParams.toString()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        overall_request_summary: {
-          requested_chain_ids: data.chains.map(id => parseInt(id, 10)),
-          timeframe: data.timeframe,
-          max_tokens_per_chain_screening: 260,
-          mvo_objective: data.mvoObjective,
-          risk_free_rate: data.riskFreeRate || 0.02,
-          annualization_factor_used: 365,
-          total_unique_assets_after_screening: 274,
-          assets_considered_for_global_mvo: 273,
-          assets_in_final_portfolio: 30,
-          total_processing_time_seconds: 20.59, // Quicker for demo
-          chain_data_gathering_summary: {
-            "1": { chain_name: "Ethereum", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('1') ? 181 : 0 },
-            "10": { chain_name: "Optimism", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('10') ? 37 : 0 },
-            "42161": { chain_name: "Arbitrum", status: "success_data_gathering", error_message: null, assets_found: data.chains.includes('42161') ? 56 : 0 },
-          },
-        },
-      };
-      setPortfolioData(mockApiResponse);
+      });
+
+      if (!response.ok) {
+        let errorData;
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          const textError = await response.text();
+          throw new Error(textError || `API Error: ${response.status} ${response.statusText}`);
+        }
+        throw new Error(errorData.detail || `API Error: ${response.status} ${response.statusText}`);
+      }
+
+      const result: PortfolioApiResponse = await response.json();
+      setPortfolioData(result);
+      setShowResults(true);
+    } catch (error: any) {
+      console.error("API Error:", error);
+      setApiError(error.message || "An unexpected error occurred while fetching portfolio data.");
+      setPortfolioData(null);
+    } finally {
       setIsLoading(false);
-      setShowResults(true); // Show results after fetching
-      setSelectedAssetForDeepDive(null); // Clear any previous deep dive selection
-    }, 1500); // Shorter delay for demo
+    }
   };
 
   const handleAssetSelect = (asset: RankedAssetSummary) => {
@@ -150,6 +127,29 @@ const Dashboard: NextPage = () => {
   };
 
   const globalPortfolioData = portfolioData?.results_by_chain?.["global_cross_chain"];
+  
+  // Determine which portfolio details to display based on selection
+  let portfolioDetailsToDisplay: OptimizedPortfolioDetails | null | undefined = globalPortfolioData?.data.optimized_portfolio_details;
+  const alternativePortfolios = globalPortfolioData?.data.alternative_optimized_portfolios;
+
+  if (displayedMVOObjective !== "primary" && alternativePortfolios && alternativePortfolios[displayedMVOObjective]) {
+    const altPortfolio = alternativePortfolios[displayedMVOObjective];
+    // Check if it's a valid portfolio detail and not an error object
+    if (altPortfolio && typeof altPortfolio === 'object' && 'weights' in altPortfolio) {
+         portfolioDetailsToDisplay = altPortfolio as OptimizedPortfolioDetails;
+    }
+  }
+
+  const mvoDisplayOptions = [ {id: "primary", name: `Primary: ${globalPortfolioData?.request_params_for_chain.mvo_objective.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) || 'Objective'}`} ];
+  if (alternativePortfolios) {
+    Object.keys(alternativePortfolios).forEach(key => {
+      // Only add if it's a valid portfolio and not an error placeholder
+      const altPortfolio = alternativePortfolios[key];
+      if (altPortfolio && typeof altPortfolio === 'object' && 'weights' in altPortfolio) {
+        mvoDisplayOptions.push({ id: key, name: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) });
+      }
+    });
+  }
 
   // Add a key to result components to force re-mount and re-animate on new data
   const resultsKey = portfolioData ? JSON.stringify(portfolioData.overall_request_summary.requested_chain_ids) + portfolioData.overall_request_summary.timeframe : 'no_results';
@@ -174,7 +174,7 @@ const Dashboard: NextPage = () => {
                 Home
               </Button>
             </Link>
-            <div className="text-xl font-bold bg-gradient-to-r from-purple-400 to-violet-300 bg-clip-text text-transparent">
+            <div className="text-xl font-bold text-white">
               DeFi Optimizer
             </div>
           </div>
@@ -188,9 +188,9 @@ const Dashboard: NextPage = () => {
           {!isConnected ? (
             <Card className="text-center py-12 sm:py-20 bg-slate-800/50 border-slate-700 shadow-xl">
                 <CardHeader>
-                    <Briefcase className="h-16 w-16 mx-auto mb-6 text-purple-400" />
+                    <Briefcase className="h-16 w-16 mx-auto mb-6 text-white" />
                     <CardTitle className="text-3xl font-bold text-white mb-3">Connect Your Wallet</CardTitle>
-                    <CardDescription className="text-lg text-gray-400 mb-6 max-w-md mx-auto">
+                    <CardDescription className="text-lg text-gray-300 mb-6 max-w-md mx-auto">
                         Connect your wallet to unlock advanced portfolio optimization and management features.
                     </CardDescription>
                 </CardHeader>
@@ -212,7 +212,7 @@ const Dashboard: NextPage = () => {
                 <Card className="bg-slate-800/50 border-slate-700 shadow-lg">
                   <CardContent className="pt-6 text-center py-10">
                     <div className="flex justify-center items-center mb-4">
-                        <svg className="animate-spin h-8 w-8 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
@@ -256,25 +256,61 @@ const Dashboard: NextPage = () => {
                       onClose={handleCloseDeepDive} 
                     />
                   ) : (
-                    globalPortfolioData && (
+                    globalPortfolioData && portfolioDetailsToDisplay && (
                       <>
                         <OverallRequestSummaryCard summary={portfolioData.overall_request_summary} />
+                        
+                        {/* Dropdown to select MVO objective for display */}
+                        {mvoDisplayOptions.length > 1 && (
+                            <Card className="bg-slate-800 border-slate-700 text-gray-300">
+                                <CardHeader className="pb-2 pt-4 px-4">
+                                    <CardTitle className="text-md font-semibold text-white">View Portfolio Results For:</CardTitle>
+                                </CardHeader>
+                                <CardContent className="pb-4 px-4">
+                                    <div className="flex flex-wrap gap-2">
+                                        {mvoDisplayOptions.map(option => (
+                                            <Button
+                                                key={option.id}
+                                                variant={displayedMVOObjective === option.id ? "default" : "outline"}
+                                                onClick={() => setDisplayedMVOObjective(option.id)}
+                                                className={
+                                                    displayedMVOObjective === option.id 
+                                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' 
+                                                    : 'bg-slate-700 hover:bg-slate-600 border-slate-600 text-gray-200 hover:text-white'
+                                                }
+                                            >
+                                                {option.name}
+                                            </Button>
+                                        ))}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        )}
+
                         <RankedAssetsSummaryCard 
                           assets={globalPortfolioData.data.ranked_assets_summary} 
                           chainName={globalPortfolioData.chain_name} 
                           onAssetSelect={handleAssetSelect} // Pass the handler
                         />
-                        <OptimizedPortfolioDetailsCard details={globalPortfolioData.data.optimized_portfolio_details} chainName={globalPortfolioData.chain_name} />
-                        <MVOInputsSummaryCard summary={globalPortfolioData.data.mvo_inputs_summary} chainName={globalPortfolioData.chain_name} />
+                        <OptimizedPortfolioDetailsCard details={portfolioDetailsToDisplay} chainName={globalPortfolioData.chain_name} />
+                        <MVOInputsSummaryCard 
+                          summary={globalPortfolioData.data.mvo_inputs_summary} 
+                          chainName={globalPortfolioData.chain_name} 
+                          covarianceMatrix={portfolioDetailsToDisplay.covariance_matrix_optimized} // Use displayed portfolio's covariance
+                        />
+                        <EfficientFrontierPlot 
+                          primaryPortfolio={globalPortfolioData.data.optimized_portfolio_details}
+                          alternativePortfolios={globalPortfolioData.data.alternative_optimized_portfolios}
+                        />
                       
                         {/* Placeholder for Individual Asset Details - More detailed UI */}
                         <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-800 bg-slate-800 border-slate-700">
                           <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
-                              <Database className="h-6 w-6 text-teal-400" />
+                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-white">
+                              <Database className="h-6 w-6 text-white" />
                               General Information (Placeholder)
                               </CardTitle>
-                            <CardDescription className="text-slate-400">Further details or global charts could appear here when no specific asset is selected for deep dive.</CardDescription>
+                            <CardDescription className="text-slate-300">Further details or global charts could appear here when no specific asset is selected for deep dive.</CardDescription>
                           </CardHeader>
                           <CardContent className="min-h-[150px] flex items-center justify-center">
                             <p className="text-slate-500 italic">Click an asset in the &apos;Ranked Assets Summary&apos; to see a detailed deep dive.</p>
@@ -284,11 +320,11 @@ const Dashboard: NextPage = () => {
                         {/* Placeholder for Benchmark Comparison - More detailed UI */}
                         <Card className="shadow-lg transition-all duration-500 ease-out hover:shadow-xl opacity-0 animate-fadeIn animation-delay-1000 bg-slate-800 border-slate-700">
                           <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-gray-200">
-                              <Activity className="h-6 w-6 text-cyan-400" />
+                            <CardTitle className="flex items-center gap-2 text-xl font-semibold text-white">
+                              <Activity className="h-6 w-6 text-white" />
                               Performance vs. Benchmarks (Placeholder)
                               </CardTitle>
-                            <CardDescription className="text-slate-400">Track your portfolio&apos;s performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
+                            <CardDescription className="text-slate-300">Track your portfolio&apos;s performance against key market benchmarks (e.g., BTC, ETH).</CardDescription>
                           </CardHeader>
                           <CardContent className="min-h-[150px] flex items-center justify-center">
                             <p className="text-slate-500 italic">Comparative performance charts and detailed metrics will be displayed here.</p>
