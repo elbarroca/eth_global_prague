@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/alphastream-banner.png" alt="AlphaStream Engine Banner" width="800"/>
+  <img src="https://github.com/user-attachments/assets/quantumleap-banner.png" alt="QuantumLeap Engine Banner" width="800"/>
 </p>
 
-<h1 align="center">AlphaStream Engine</h1>
+<h1 align="center">QuantumLeap Engine</h1>
 
 <p align="center">
   <strong>Unlock Cross-Chain Alpha. Intelligently.</strong>
@@ -26,20 +26,20 @@
 
 ## ✨ Project Overview
 
-In today's dynamic DeFi landscape, finding a true investment edge across multiple blockchains is a complex puzzle. **AlphaStream Engine** cuts through the noise, offering a sophisticated yet intuitive platform for discovering and constructing high-potential, risk-adjusted portfolios.
+In today's dynamic DeFi landscape, finding a true investment edge across multiple blockchains is a complex puzzle. **QuantumLeap Engine** cuts through the noise, offering a sophisticated yet intuitive platform for discovering and constructing high-potential, risk-adjusted portfolios.
 
 We automate the journey from raw, multi-chain data to actionable investment strategies, empowering you to navigate the DeFi markets with greater confidence and precision.
 
 ---
 
-## 💡 How It Works: The Alpha Pipeline
+## 💡 How It Works: The QuantumLeap Pipeline
 
-AlphaStream employs a systematic, multi-stage process to generate its insights:
+QuantumLeap employs a systematic, multi-stage process to generate its insights:
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/architecture-diagram.png" alt="AlphaStream Architecture Diagram" width="900"/>
+  <img src="https://github.com/user-attachments/assets/architecture-diagram.png" alt="QuantumLeap Architecture Diagram" width="900"/>
   <br/>
-  <em>Figure 1: AlphaStream's Core Data and Logic Flow.</em>
+  <em>Figure 1: QuantumLeap's Core Data and Logic Flow.</em>
 </p>
 
 ### 1. 🌍 **Multi-Chain Data Aggregation**
@@ -256,8 +256,9 @@ Fetches historical price data for analysis.
 
 ## 🔮 Future Vision
 
-AlphaStream Engine is just the beginning. Our roadmap includes:
+QuantumLeap Engine is just the beginning. Our roadmap includes:
 
+- **⚙️ Integration of Pectra's EIP-7702:** Improving UX, user only signs once for full portfolio rebalancing
 - **✅ One-Click Execution:** Complete 1inch Fusion+ integration for seamless portfolio rebalancing
 - **👤 User Accounts:** Personalized strategies and performance tracking
 - **📊 Enhanced Data Sources:** On-chain sentiment analysis and governance activity
