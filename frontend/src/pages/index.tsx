@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowRight, Brain, Database, GitFork, Zap, Shield, Globe, Clock, Network, Sparkles, TrendingUp, Target } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn } from 'lib/utils';
 
 // Enhanced chain logos with better styling using proper Tailwind
 const ChainLogo = ({ name, symbol }: { name: string; symbol: string }) => (
