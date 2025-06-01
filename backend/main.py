@@ -127,13 +127,20 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLO
 origins = [
     "http://localhost", # Your frontend origin if it's just localhost without port
     "http://localhost:3000",  # Assuming your Next.js frontend runs on port 3000
-    "https://eth-global-prague-q7who0xiy-elbarrocas-projects.vercel.app",  # Production Vercel URL
+    "https://eth-global-prague.vercel.app",
     # Add any other origins you need to allow (e.g., your deployed frontend URL)
 ] + ALLOWED_ORIGINS  # Add any additional origins from environment
 
 # For production, you might also want to allow all Vercel preview deployments
 # Uncomment the line below if you want to allow all vercel.app subdomains (less secure)
 # origins.append("https://*.vercel.app")
+
+# For development/testing, you can temporarily allow all Vercel domains
+# Remove this in production for better security
+origins.extend([
+    "https://*.vercel.app",  # Allow all Vercel deployments
+    "https://*.ngrok.io",    # Allow ngrok tunnels for development
+])
 
 app.add_middleware(
     CORSMiddleware,
