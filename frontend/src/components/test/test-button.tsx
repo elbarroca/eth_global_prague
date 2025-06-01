@@ -1,13 +1,14 @@
 import { Button } from "@/components/ui/button"
 import { useApproveTransfer } from "@/hooks/erc20/useApproveTransfer"
-import { useOrder, TOKEN_ADDRESS } from "@/hooks/1inch/useOrder";
-import { SupportedChain } from "@1inch/cross-chain-sdk";
+import { useOrder, getActiveOrders, TOKEN_ADDRESS } from "@/hooks/1inch/useOrder";
+import { NetworkEnum, SupportedChain } from "@1inch/cross-chain-sdk";
 import { useAccount } from "wagmi";
 
 export default function TestButton() {
     const { address: walletAddress } = useAccount();
     const { approveTransfer } = useApproveTransfer();
     const { getQuoteAndExecuteOrder } = useOrder();
+
 
     // Define chain IDs according to 1inch cross-chain SDK
     const CHAIN_IDS = {
@@ -39,14 +40,33 @@ export default function TestButton() {
             enableEstimate: true, 
             walletAddress: walletAddress 
         });
+
+        // const result = await getQuoteAndExecuteOrder({
+        //     amount: '10000000',  
+        //     srcChainId: NetworkEnum.POLYGON,  
+        //     dstChainId: NetworkEnum.BINANCE,  
+        //     enableEstimate: true,  
+        //     srcTokenAddress: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f', // USDT  
+        //     dstTokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // BNB  
+        //     walletAddress
+        // });    
         
         console.log(result);
     }
     
+    const getOrders = async () => {
+        const orders = await getActiveOrders();
+        console.log(orders);
+    }
+
     return (
         <div className="flex gap-3">
             <Button onClick={approve}>Test Approve</Button>
-            <Button onClick={sendTx} className="bg-emerald-600 hover:bg-emerald-700">Test Cross-Chain Tx</Button>
+            <Button 
+            onClick={
+                // sendTx
+                getOrders
+            } className="bg-emerald-600 hover:bg-emerald-700">Test Cross-Chain Tx</Button>
         </div>
     )
 }

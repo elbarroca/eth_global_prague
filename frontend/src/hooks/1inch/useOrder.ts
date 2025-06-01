@@ -5,7 +5,7 @@ import {
     PresetEnum,
     OrderStatus,  
 } from '@1inch/cross-chain-sdk';
-import sdk from "@/providers/fusion-sdk";
+import initializeSDK from "@/providers/fusion-sdk";
 import { getRandomBytes32 } from "@/utils/get-random-bytes";
 import { sleep } from "@/utils/sleep";
 
@@ -34,9 +34,19 @@ export interface quoteParams {
   
 const source = "sdk-tutorial";
 
+export async function getActiveOrders() {
+    const sdk = await initializeSDK();
+    if (!sdk) {
+        throw new Error('1inch SDK not available. Please check environment configuration.');
+    }
+    const orders = await sdk.getActiveOrders({ page: 1, limit: 2 });
+    return orders;
+}
+
 export async function getQuoteAndExecuteOrder(params: quoteParams) {
   try {
-    // Check if SDK is available
+    const sdk = await initializeSDK();
+
     if (!sdk) {
       throw new Error('1inch SDK not available. Please check environment configuration.');
     }
@@ -127,7 +137,7 @@ export async function getQuoteAndExecuteOrder(params: quoteParams) {
 
 export function useOrder() {
   return {
-    getQuoteAndExecuteOrder,
-    isSDKAvailable: !!sdk
+    getQuoteAndExecuteOrder
   };
 }
+

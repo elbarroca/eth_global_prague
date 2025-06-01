@@ -1,6 +1,6 @@
 # app/main.py
-from fastapi import FastAPI, HTTPException, Query, Body
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Body, Request
+from fastapi.responses import StreamingResponse, Response
 from typing import List, Optional, Dict, Any, Tuple
 import logging
 import time
@@ -33,6 +33,7 @@ from forecast.ta_forecast import generate_ta_signals
 from forecast.mvo_portfolio import calculate_mvo_inputs, optimize_portfolio_mvo
 import numpy as np
 from contextlib import asynccontextmanager
+import httpx
 import os
 
 # Global log queue for streaming
@@ -114,10 +115,28 @@ if not any(isinstance(h, LogStreamHandler) for h in root_logger.handlers):
         # Enable propagation to ensure logs reach the root logger
         existing_logger.propagate = True
 
+# Define lifespan context manager for app startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    await connect_to_mongo()
+    logger.info("MongoDB connection established successfully on startup.")
+    await one_inch_data_service.get_http_client()
+    logger.info("Global HTTPX client initialized.")
+    
+    yield
+    
+    # Shutdown logic
+    await close_mongo_connection()
+    logger.info("MongoDB connection closed on shutdown.")
+    await one_inch_data_service.close_http_client()
+    logger.info("Global HTTPX client closed.")
+
 app = FastAPI(
     title="1inch Token Screener API",
     description="API for DeFI Asset Management, Token Screening, and Portfolio Optimization",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan  # Add the lifespan context manager
 )
 
 # CORS configuration
@@ -150,21 +169,21 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-@app.on_event("startup")
-async def startup_app_clients():
- 
-    await connect_to_mongo()
-    logger.info("MongoDB connection established successfully on startup.")
-    await one_inch_data_service.get_http_client()
-    logger.info("Global HTTPX client initialized.")
+# Remove the deprecated event handlers
+# @app.on_event("startup")
+# async def startup_app_clients():
+#     await connect_to_mongo()
+#     logger.info("MongoDB connection established successfully on startup.")
+#     await one_inch_data_service.get_http_client()
+#     logger.info("Global HTTPX client initialized.")
 
-@app.on_event("shutdown")
-async def shutdown_app_clients():
-    await close_mongo_connection()
-    logger.info("MongoDB connection closed on shutdown.")
+# @app.on_event("shutdown")
+# async def shutdown_app_clients():
+#     await close_mongo_connection()
+#     logger.info("MongoDB connection closed on shutdown.")
     
-    await one_inch_data_service.close_http_client()
-    logger.info("Global HTTPX client closed.")
+#     await one_inch_data_service.close_http_client()
+#     logger.info("Global HTTPX client closed.")
 
 # Log streaming endpoint
 @app.get("/logs/stream")
@@ -1534,3 +1553,67 @@ async def get_optimized_portfolio_for_chain(
             logger.warning(f"Failed to cache portfolio results: {e}. Returning results anyway.")
     
     return pipeline_result
+
+API_BASE = "https://api.1inch.dev/fusion-plus"
+AUTH_KEY = "PrA0uavUMpVOig4aopY0MQMqti3gO19d"  # Replace with your real auth key
+
+@app.api_route("/fusion-plus/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy(path: str, request: Request):
+    """
+    Proxy endpoint for 1inch Fusion+ API
+    """
+    url = f"{API_BASE}/{path}"
+    method = request.method
+    
+    # Log request details
+    logger.info(f"🔄 PROXY REQUEST: {method} to {url}")
+    logger.info(f"🔍 Query params: {dict(request.query_params)}")
+    
+    # Prepare headers (excluding Authorization header from logs)
+    headers = dict(request.headers)
+    safe_headers = {k: v for k, v in headers.items() if k.lower() != 'authorization'}
+    logger.info(f"📝 Request headers: {safe_headers}")
+    
+    # Add 1inch API key
+    headers["Authorization"] = f"Bearer {AUTH_KEY}"
+    
+    try:
+        # Log request body for non-GET requests (limited to avoid huge logs)
+        if method != "GET":
+            body = await request.body()
+            body_str = body.decode('utf-8')[:500]  # Limit to 500 chars
+            if len(body) > 500:
+                body_str += "... [truncated]"
+            logger.info(f"📦 Request body: {body_str}")
+        else:
+            body = b''
+            
+        logger.info(f"⏳ Sending request to 1inch API...")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=request.query_params,
+                content=body
+            )
+            
+        # Log response details
+        logger.info(f"✅ Response received: Status {response.status_code}")
+        logger.info(f"📊 Response size: {len(response.content)} bytes")
+        
+        # Log response content (limited for large responses)
+        content_preview = response.content[:500]
+        if len(response.content) > 500:
+            content_preview = content_preview + b"... [truncated]"
+        logger.info(f"📄 Response preview: {content_preview}")
+        
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=dict(response.headers)
+        )
+    except Exception as e:
+        logger.error(f"❌ Proxy error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")

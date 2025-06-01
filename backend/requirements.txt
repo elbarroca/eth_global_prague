@@ -18,3 +18,4 @@ httpx>=0.27.0
 TA-Lib
 arch
 cvxpy
+async_lru>=2.0.4
