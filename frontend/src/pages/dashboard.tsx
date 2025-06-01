@@ -28,12 +28,58 @@ import {
   ChainOption,
   chainOptions,
 } from '@/types/portfolio-api';
-import { SupportedChain } from '@1inch/cross-chain-sdk';
 
 import { useOrder } from '@/hooks/1inch/useOrder';
 import { TOKEN_ADDRESS } from '@/hooks/1inch/useOrder';
 import { SupportedChain } from '@1inch/cross-chain-sdk';
+import { getTokens, getTransactionStatsChart, getTokenTransfers, getTokenHolders } from '@/hooks/blockscout/useBlockscout';
 import TestButton from '@/components/test/test-button';
+
+
+async function getBlockscoutData() {
+    try {
+    console.log("Fetching transaction stats chart...");
+    const txStats = await getTransactionStatsChart();
+    console.log("Transaction Stats (first 5):", txStats.slice(0, 5));
+    if (txStats.length > 0) {
+        console.log("Last point:", txStats[txStats.length - 1]);
+    }
+
+    console.log("\nFetching tokens (first 5)...");
+    const tokensResponse = await getTokens({ items_count: 5 });
+    console.log("Tokens:", tokensResponse.items);
+    if (tokensResponse.next_page_params) {
+      console.log("Next page params for tokens:", tokensResponse.next_page_params);
+
+    }
+
+    const exampleTokenAddress = "0xdAC17F958D2ee523a2206206994597C13D831ec7"; // Tether USD (USDT) on Ethereum
+
+    console.log(`\nFetching transfers for token ${exampleTokenAddress} (first 5)...`);
+    const transfersResponse = await getTokenTransfers(exampleTokenAddress, { items_count: 5 });
+    console.log("Transfers:", transfersResponse.items);
+    if (transfersResponse.next_page_params) {
+      console.log("Next page params for transfers:", transfersResponse.next_page_params);
+    }
+
+    console.log(`\nFetching holders for token ${exampleTokenAddress} (first 5)...`);
+    const holdersResponse = await getTokenHolders(exampleTokenAddress, { items_count: 5 });
+    console.log("Holders:", holdersResponse.items);
+    if (holdersResponse.next_page_params) {
+      console.log("Next page params for holders:", holdersResponse.next_page_params);
+    }
+
+  } catch (error) {
+    console.error("\n--- An error occurred during API calls ---");
+    if (error instanceof Error) {
+        console.error("Error message:", error.message);
+        // console.error("Error stack:", error.stack);
+    } else {
+        console.error("Unknown error:", error);
+    }
+  }
+}
+
 
 // Define Zod schema for form validation (can be co-located or imported)
 const portfolioFormSchema = z.object({
@@ -55,6 +101,7 @@ interface SelectedChainDetails {
 const Dashboard: NextPage = () => {
   const { address: accountAddress, isConnected } = useAccount();
   const { getQuoteAndExecuteOrder } = useOrder();
+  getBlockscoutData();
   
   const [portfolioData, setPortfolioData] = useState<PortfolioApiResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
