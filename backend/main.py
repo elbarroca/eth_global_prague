@@ -33,6 +33,7 @@ from forecast.ta_forecast import generate_ta_signals
 from forecast.mvo_portfolio import calculate_mvo_inputs, optimize_portfolio_mvo
 import numpy as np
 from contextlib import asynccontextmanager
+import os
 
 # Global log queue for streaming
 log_queue = queue.Queue()
@@ -120,11 +121,19 @@ app = FastAPI(
 )
 
 # CORS configuration
+# Get allowed origins from environment variable or use defaults
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else []
+
 origins = [
     "http://localhost", # Your frontend origin if it's just localhost without port
     "http://localhost:3000",  # Assuming your Next.js frontend runs on port 3000
+    "https://eth-global-prague-q7who0xiy-elbarrocas-projects.vercel.app",  # Production Vercel URL
     # Add any other origins you need to allow (e.g., your deployed frontend URL)
-]
+] + ALLOWED_ORIGINS  # Add any additional origins from environment
+
+# For production, you might also want to allow all Vercel preview deployments
+# Uncomment the line below if you want to allow all vercel.app subdomains (less secure)
+# origins.append("https://*.vercel.app")
 
 app.add_middleware(
     CORSMiddleware,
