@@ -58,7 +58,7 @@ const Dashboard: NextPage = () => {
   const [showResults, setShowResults] = useState(false);
   const [selectedAssetForDeepDive, setSelectedAssetForDeepDive] = useState<RankedAssetSummary | null>(null);
   const [displayedMVOObjective, setDisplayedMVOObjective] = useState<string>("primary");
-  const [isExecutingTx, setIsExecutingTx] = useState(false);
+  
   // New state for tracking selected chains with full details
   const [selectedChains, setSelectedChains] = useState<SelectedChainDetails[]>([]);
 

@@ -1,6 +1,119 @@
-# DeFi Portfolio Optimizer Frontend
+# QuantumLeap Frontend
 
-This is the frontend for the DeFi Portfolio Optimizer built with Next.js.
+A Next.js application for DeFi portfolio optimization across multiple chains.
+
+## 🚀 Quick Start
+
+### Local Development
+
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+2. **Set up environment variables:**
+   Create a `.env.local` file in the frontend directory:
+   ```bash
+   NEXT_PUBLIC_API_URL=http://localhost:8000
+   ```
+
+3. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
+
+4. **Open your browser:**
+   Navigate to [http://localhost:3000](http://localhost:3000)
+
+## 🌐 Vercel Deployment
+
+### Prerequisites
+- Vercel account
+- Backend API deployed and accessible
+
+### Deployment Steps
+
+1. **Connect your repository to Vercel:**
+   - Go to [vercel.com](https://vercel.com)
+   - Import your GitHub repository
+   - Select the `frontend` folder as the root directory
+
+2. **Configure environment variables in Vercel:**
+   In your Vercel project settings, add the following environment variables:
+   
+   ```
+   NEXT_PUBLIC_API_URL=https://your-backend-api-url.com
+   ```
+
+3. **Build settings:**
+   Vercel should automatically detect Next.js. If needed, configure:
+   - **Framework Preset:** Next.js
+   - **Build Command:** `npm run build`
+   - **Output Directory:** `.next`
+   - **Install Command:** `npm install`
+
+4. **Deploy:**
+   - Push your changes to the main branch
+   - Vercel will automatically deploy
+
+### Environment Variables
+
+| Variable | Description | Required | Example |
+|----------|-------------|----------|---------|
+| `NEXT_PUBLIC_API_URL` | Backend API base URL | Yes | `https://api.yourapp.com` |
+
+### Troubleshooting
+
+**Build Errors:**
+- Ensure all TypeScript errors are resolved
+- Check that all imports are correct
+- Verify environment variables are set
+
+**Runtime Errors:**
+- Check browser console for errors
+- Verify API endpoints are accessible
+- Ensure wallet connection is working
+
+## 🛠 Tech Stack
+
+- **Framework:** Next.js 15
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS
+- **UI Components:** Radix UI
+- **Web3:** Wagmi + RainbowKit
+- **Charts:** Recharts
+- **Forms:** React Hook Form + Zod
+
+## 📁 Project Structure
+
+```
+frontend/
+├── src/
+│   ├── components/     # Reusable UI components
+│   ├── hooks/          # Custom React hooks
+│   ├── pages/          # Next.js pages
+│   ├── stores/         # State management
+│   ├── types/          # TypeScript type definitions
+│   └── utils/          # Utility functions
+├── public/             # Static assets
+└── package.json        # Dependencies and scripts
+```
+
+## 🔧 Available Scripts
+
+- `npm run dev` - Start development server
+- `npm run build` - Build for production
+- `npm run start` - Start production server
+- `npm run lint` - Run ESLint
+
+## 🌟 Features
+
+- **Multi-chain Portfolio Optimization:** Optimize portfolios across Ethereum, Polygon, Arbitrum, and more
+- **Real-time Data:** Live market data and price feeds
+- **Wallet Integration:** Connect with MetaMask, WalletConnect, and other popular wallets
+- **Interactive Charts:** Visualize portfolio performance and efficient frontiers
+- **Cross-chain Bridging:** Execute portfolio rebalancing across chains
+- **Responsive Design:** Works on desktop and mobile devices
 
 ## Environment Setup
 
@@ -21,22 +134,6 @@ PRIVATE_KEY=your-private-key-here
 - Never commit `.env.local` to version control
 - Use test/development private keys only
 - In production, use proper secret management
-
-## Getting Started
-
-1. Install dependencies:
-```bash
-npm install
-```
-
-2. Set up environment variables (see above)
-
-3. Run the development server:
-```bash
-npm run dev
-```
-
-4. Open [http://localhost:3000](http://localhost:3000) in your browser
 
 ## Features
 
